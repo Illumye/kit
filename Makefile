@@ -18,7 +18,14 @@ TEST_ASAN:= $(patsubst tests/%.c,tests/run_%_asan,$(TEST_SRC))
 
 SAN = -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
 
-.PHONY: all test test-asan test-all examples check-c11 check-examples clean
+# Windows cross build. The _WIN32 branches are otherwise never compiled at all.
+# Needs gcc-mingw-w64-x86-64, and wine to run the result.
+MINGW    ?= x86_64-w64-mingw32-gcc
+WINE     ?= wine
+WIN_BIN  := $(patsubst tests/%.c,tests/win_%.exe,$(TEST_SRC))
+
+.PHONY: all test test-asan test-all examples check-c11 check-examples \
+        check-windows clean
 
 all: test
 
@@ -54,6 +61,16 @@ check-c11:
 
 test-all: check-c11 test test-asan check-examples
 
+# --- Windows -------------------------------------------------------------------
+
+tests/win_%.exe: tests/%.c utils.h tests/utest.h
+	$(MINGW) $(CFLAGS) $< -o $@
+
+# Not part of test-all: it needs a cross compiler that most machines lack.
+check-windows: $(WIN_BIN)
+	@rc=0; for t in $(WIN_BIN); do WINEDEBUG=-all $(WINE) $$t || rc=1; done; \
+	 echo "windows: done"; exit $$rc
+
 # --- examples -----------------------------------------------------------------
 
 examples: examples/cli examples/build
@@ -79,6 +96,6 @@ check-examples: examples/build examples/cli
 	@echo "examples: ok"
 
 clean:
-	rm -f $(TEST_BIN) $(TEST_ASAN) examples/cli examples/build .compile-check.c
+	rm -f $(TEST_BIN) $(TEST_ASAN) $(WIN_BIN) examples/cli examples/build .compile-check.c
 	rm -rf build
-	rm -f utest-tmp-*
+	rm -rf utest-tmp-*

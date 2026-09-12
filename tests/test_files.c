@@ -77,9 +77,11 @@ TEST(log_omits_ansi_codes_when_not_a_tty) {
     remove(TMP_TXT);
 }
 
-/* Reads back what one LOG call wrote, with colour off. */
+/* Reads back what one LOG call wrote, with colour off. Binary mode, because
+ * Windows text mode would turn every \n into \r\n and the comparisons below
+ * are byte exact. */
 static char *log_once(unsigned fields, LogLevel level, const char *message) {
-    FILE *fp = fopen(TMP_TXT, "w");
+    FILE *fp = fopen(TMP_TXT, "wb");
     if (!fp) return NULL;
 
     log_set_output(fp);

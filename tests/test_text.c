@@ -7,6 +7,13 @@
 #include "../utils.h"
 #include "utest.h"
 
+/* path_join inserts PATH_SEP, which is a backslash on Windows. */
+#ifdef _WIN32
+#    define SEP "\\"
+#else
+#    define SEP "/"
+#endif
+
 /* --- string views --------------------------------------------------------- */
 
 TEST(sv_construction_and_equality) {
@@ -310,9 +317,9 @@ TEST(path_dirname_cases) {
 
 TEST(path_join_cases) {
     char buf[64];
-    CHECK_STR(path_join(buf, sizeof(buf), "/usr", "lib"), "/usr/lib");
+    CHECK_STR(path_join(buf, sizeof(buf), "/usr", "lib"), "/usr" SEP "lib");
     CHECK_STR(path_join(buf, sizeof(buf), "/usr/", "lib"), "/usr/lib");
-    CHECK_STR(path_join(buf, sizeof(buf), "/usr", "/lib"), "/usr/lib");
+    CHECK_STR(path_join(buf, sizeof(buf), "/usr", "/lib"), "/usr" SEP "lib");
     CHECK_STR(path_join(buf, sizeof(buf), "/usr/", "///lib"), "/usr/lib");
     CHECK_STR(path_join(buf, sizeof(buf), "/usr", ""), "/usr");
     CHECK_STR(path_join(buf, sizeof(buf), "", "lib"), "lib");

@@ -41,7 +41,7 @@ TEST(arena_honours_over_alignment) {
         void *p = arena_alloc_aligned(&a, 32, align);
         if (!CHECK(p != NULL)) break;
         if (!CHECK((uintptr_t)p % align == 0))
-            printf("      align=%zu gave %p\n", align, p);
+            printf("      align=%lu gave %p\n", (unsigned long)align, p);
     }
     arena_free(&a);
 }
