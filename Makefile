@@ -10,7 +10,7 @@ CC       ?= cc
 WARNINGS  = -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wcast-qual \
             -Wstrict-prototypes -Wwrite-strings
 CFLAGS   ?= -std=c11 -O2 -g $(WARNINGS)
-LDLIBS    = -lm
+LDLIBS    = -lm -pthread
 
 TEST_SRC := $(wildcard tests/test_*.c)
 TEST_BIN := $(patsubst tests/%.c,tests/run_%,$(TEST_SRC))

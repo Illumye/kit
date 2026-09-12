@@ -129,6 +129,7 @@ Define these before including the header to change its defaults.
 | `DA_INIT_CAP` | Initial capacity of a dynamic array, default 256 |
 | `ARENA_REGION_SIZE` | Size of a new arena region, default 64 KiB |
 | `UTILS_READ_CHUNK` | Read buffer size, default 64 KiB |
+| `UTILS_NO_THREAD_LOCAL` | One shared scratch arena instead of one per thread |
 
 On POSIX the header requests `_POSIX_C_SOURCE` for `clock_gettime`, `dprintf`
 and `isatty`, so include it before any other system header when building with

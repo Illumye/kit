@@ -202,6 +202,99 @@ TEST(temp_mark_and_rewind_nest) {
     temp_reset();
 }
 
+/* Each thread must get its own regions: no pointer handed out to one thread
+ * may land inside another's, and one thread's allocations must survive all the
+ * others hammering theirs.
+ *
+ * The comparison has to happen while every range is still live. Once a thread
+ * calls temp_free its addresses go back to malloc, which will hand the same
+ * ones to the next thread, and an overlap then proves nothing. Hence the
+ * barrier: allocate, wait for everyone, compare, only then release. */
+#ifndef _WIN32
+#include <pthread.h>
+
+#define TL_THREADS 8
+#define TL_STRINGS 64
+
+/* A gate rather than a barrier: the workers announce they are done allocating
+ * and then hold, the main thread compares while nothing has been released,
+ * and only then lets them go. pthread_barrier_t would do, were it not absent
+ * on macOS. */
+typedef struct {
+    pthread_mutex_t lock;
+    pthread_cond_t  cv;
+    int             arrived;
+    bool            released;
+} TlGate;
+
+typedef struct {
+    TlGate   *gate;
+    uintptr_t low, high;     /* the address range this thread was handed */
+    int       id;
+    bool      content_ok;
+} TlResult;
+
+static void *tl_worker(void *arg) {
+    TlResult *r = arg;
+    r->content_ok = true;
+    r->low  = UINTPTR_MAX;
+    r->high = 0;
+
+    for (int i = 0; i < TL_STRINGS; i++) {
+        char     *p = temp_sprintf("thread-%d-item-%d", r->id, i);
+        uintptr_t a = (uintptr_t)p;
+        if (a < r->low)              r->low  = a;
+        if (a + strlen(p) > r->high) r->high = a + strlen(p);
+
+        char expected[64];
+        snprintf(expected, sizeof(expected), "thread-%d-item-%d", r->id, i);
+        if (strcmp(p, expected) != 0) r->content_ok = false;
+    }
+
+    pthread_mutex_lock(&r->gate->lock);
+    r->gate->arrived++;
+    pthread_cond_broadcast(&r->gate->cv);
+    while (!r->gate->released) pthread_cond_wait(&r->gate->cv, &r->gate->lock);
+    pthread_mutex_unlock(&r->gate->lock);
+
+    temp_free();   /* a worker releases its own regions */
+    return NULL;
+}
+
+TEST(temp_allocator_is_per_thread) {
+    static TlResult results[TL_THREADS];
+    pthread_t       threads[TL_THREADS];
+    TlGate          gate = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER,
+                             0, false };
+
+    for (int i = 0; i < TL_THREADS; i++) {
+        results[i].id   = i;
+        results[i].gate = &gate;
+        CHECK_INT(pthread_create(&threads[i], NULL, tl_worker, &results[i]), 0);
+    }
+
+    /* Every range is live and none is freed while this holds. */
+    pthread_mutex_lock(&gate.lock);
+    while (gate.arrived < TL_THREADS) pthread_cond_wait(&gate.cv, &gate.lock);
+
+    int overlaps = 0;
+    for (int i = 0; i < TL_THREADS; i++)
+        for (int j = i + 1; j < TL_THREADS; j++)
+            if (results[i].low <= results[j].high && results[j].low <= results[i].high)
+                overlaps++;
+
+    gate.released = true;
+    pthread_cond_broadcast(&gate.cv);
+    pthread_mutex_unlock(&gate.lock);
+
+    for (int i = 0; i < TL_THREADS; i++) pthread_join(threads[i], NULL);
+
+    if (!CHECK_INT(overlaps, 0))
+        printf("      two threads were handed the same scratch memory\n");
+    for (int i = 0; i < TL_THREADS; i++) CHECK(results[i].content_ok);
+}
+#endif /* !_WIN32 */
+
 /* --- hash map ------------------------------------------------------------- */
 
 TEST(hm_set_get_delete) {
@@ -334,6 +427,9 @@ int main(void) {
     RUN(temp_allocator_basics);
     RUN(temp_reset_reclaims_everything);
     RUN(temp_mark_and_rewind_nest);
+#ifndef _WIN32
+    RUN(temp_allocator_is_per_thread);
+#endif
     RUN(hm_set_get_delete);
     RUN(hm_on_an_empty_map_is_safe);
     RUN(hm_stores_null_values);

@@ -110,6 +110,20 @@
 #    define UTILS_NORETURN
 #endif
 
+/* Thread-local storage for the scratch arena. Define UTILS_NO_THREAD_LOCAL to
+ * fall back to a single shared one, for a freestanding target that has none. */
+#if defined(UTILS_NO_THREAD_LOCAL)
+#    define UTILS_THREAD_LOCAL
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#    define UTILS_THREAD_LOCAL _Thread_local
+#elif defined(__GNUC__) || defined(__clang__)
+#    define UTILS_THREAD_LOCAL __thread
+#elif defined(_MSC_VER)
+#    define UTILS_THREAD_LOCAL __declspec(thread)
+#else
+#    define UTILS_THREAD_LOCAL
+#endif
+
 #define UTILS_UNUSED(v)      (void)(v)
 #define UTILS_ARRAY_LEN(a)   (sizeof(a) / sizeof((a)[0]))
 
@@ -593,8 +607,13 @@ void       arena_rewind(Arena *a, Arena_Mark mark);
  *   ... temp_sprintf ...
  *   temp_rewind(m);
  *
- * The arena is global, so none of this is thread-safe. A thread that needs
- * scratch space should carry its own Arena.
+ * The arena is thread-local, so two threads never hand each other a pointer
+ * and never race. The consequence is that each thread owns its own regions:
+ * a thread that allocates scratch and then exits leaves them behind unless it
+ * calls temp_free on its way out. Long-lived threads want temp_reset per unit
+ * of work, worker threads that come and go want temp_free before returning.
+ *
+ * Define UTILS_NO_THREAD_LOCAL to go back to one shared arena.
  * -------------------------------------------------------------------------- */
 
 void  *temp_alloc(size_t size);
@@ -1936,7 +1955,8 @@ void arena_rewind(Arena *a, Arena_Mark mark) {
  * Temporary allocator
  * -------------------------------------------------------------------------- */
 
-static Arena UTILS__TEMP = {0};
+/* One arena per thread: see the header for who is expected to free it. */
+static UTILS_THREAD_LOCAL Arena UTILS__TEMP = {0};
 
 void *temp_alloc(size_t size) {
     return arena_alloc(&UTILS__TEMP, size);

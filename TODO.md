@@ -19,6 +19,11 @@ an owner for the copies, which means an arena parameter or a free hook.
 source files and manifests; wrong for anything large. A streaming reader would
 be a different API, not a change to this one.
 
+**Each thread owns its scratch regions.** The temporary allocator is
+thread-local, so a thread that allocates scratch and exits without calling
+`temp_free` leaves its regions behind. That is the price of never
+synchronising, and it is one call to avoid.
+
 **`PANIC` on allocation failure.** The dynamic arrays, the arena and the string
 builder abort rather than propagate an error. For the command-line tools this
 library targets, an out-of-memory condition is not recoverable and threading
@@ -29,10 +34,6 @@ the error through every macro would poison the ergonomics.
 **No `extern "C"` guard.** The header cannot be included from C++. Adding the
 guard is easy; making the body compile as C++ is not, because it relies on
 implicit `void *` conversions throughout.
-
-**The temporary allocator is global.** `temp_alloc` and friends share one
-process-wide arena, so they are not thread-safe. A thread that needs scratch
-space carries its own `Arena`.
 
 **`sv_try_chop_by_delim` folds the trailing empty field.** `"a,b"` and `"a,b,"`
 both yield two fields. Distinguishing them needs a state bit hidden inside the
