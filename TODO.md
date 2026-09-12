@@ -34,15 +34,13 @@ signature, so it waits for a deliberate API break.
 guard is easy; making the body compile as C++ is not, because it relies on
 implicit `void *` conversions throughout.
 
-**The arena aligns to `sizeof(void *)`.** Over-aligned types, SIMD vectors and
-`long double` among them, are not served correctly. An `arena_alloc_aligned`
-would fix this.
+**The temporary allocator is global.** `temp_alloc` and friends share one
+process-wide arena, so they are not thread-safe. A thread that needs scratch
+space carries its own `Arena`.
 
-**The arena is one fixed block.** It aborts when full instead of chaining a new
-region. Queued as part of the comfort work below.
-
-**`opts_parse` rejects grouped short flags.** `-vn` fails where `-v -n` works,
-although grouping is the universal POSIX convention. Queued below.
+**`sv_try_chop_by_delim` folds the trailing empty field.** `"a,b"` and `"a,b,"`
+both yield two fields. Distinguishing them needs a state bit hidden inside the
+`String_View`, which costs more than it is worth.
 
 **`da_contains` needs GNU statement expressions.** It is compiled out on MSVC.
 Every other macro in the library is portable.
@@ -58,10 +56,6 @@ output, because each record is written with several `fprintf` calls.
 only ever been compiled and run on Linux.
 
 ## Queued work
-
-**Comfort layer.** Chained arena regions, a temporary allocator along the lines
-of `temp_sprintf`, grouped short flags, and a fuller `String_View`: `sv_split`,
-`sv_index_of`, and numeric conversions.
 
 **Continuous integration.** A workflow running `make test-all` under both gcc
 and clang, so the guarantees the test suite provides are actually enforced.
