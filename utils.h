@@ -135,9 +135,32 @@ typedef enum {
     LOG_COLOR_NEVER
 } LogColorMode;
 
+/* Which fields precede the message. Combine with '|'.
+ *
+ *   log_set_fields(LOG_FIELD_DATE | LOG_FIELD_TIME | LOG_FIELD_USER);
+ *   LOG(LOG_INFO, "started");
+ *   -> [2026-09-12 (Sat)] [14:05:42] [illumye] started
+ *
+ * LOG_FIELD_COUNT numbers the records as they are emitted, which is how a
+ * burst of identical lines stops looking like a stuck program. */
+typedef enum {
+    LOG_FIELD_TIME     = 1u << 0,   /* 14:05:42                */
+    LOG_FIELD_DATE     = 1u << 1,   /* 2026-09-12 (Sat)        */
+    LOG_FIELD_LEVEL    = 1u << 2,   /* INFO                    */
+    LOG_FIELD_LOCATION = 1u << 3,   /* utils.h:42              */
+    LOG_FIELD_USER     = 1u << 4,   /* from LOGNAME/USER       */
+    LOG_FIELD_COUNT    = 1u << 5    /* record number           */
+} LogField;
+
+#define LOG_FIELDS_DEFAULT (LOG_FIELD_TIME | LOG_FIELD_LEVEL | LOG_FIELD_LOCATION)
+#define LOG_FIELDS_ALL     (LOG_FIELD_TIME | LOG_FIELD_DATE | LOG_FIELD_LEVEL | \
+                            LOG_FIELD_LOCATION | LOG_FIELD_USER | LOG_FIELD_COUNT)
+#define LOG_FIELDS_NONE    0u
+
 void log_set_level(LogLevel level);
 void log_set_output(FILE *fp);   /* NULL resets to stderr (default) */
 void log_set_color(LogColorMode mode);
+void log_set_fields(unsigned fields);
 
 void utils_log_impl(LogLevel level, const char *file, int line,
                     const char *fmt, ...) UTILS_PRINTF_FORMAT(4, 5);
@@ -887,6 +910,8 @@ static inline float map_range(float x,
 static LogLevel      UTILS__MIN_LEVEL = LOG_DEBUG;
 static FILE         *UTILS__OUTPUT    = NULL;  /* NULL -> stderr */
 static LogColorMode  UTILS__COLOR     = LOG_COLOR_AUTO;
+static unsigned      UTILS__FIELDS    = LOG_FIELDS_DEFAULT;
+static uint64_t      UTILS__RECORDS   = 0;
 
 static const char *UTILS__COLORS[] = {
     "\x1b[90m",  /* DEBUG    - grey          */
@@ -910,6 +935,10 @@ void log_set_output(FILE *fp) {
 
 void log_set_color(LogColorMode mode) {
     UTILS__COLOR = mode;
+}
+
+void log_set_fields(unsigned fields) {
+    UTILS__FIELDS = fields;
 }
 
 static bool utils__stream_is_tty(FILE *out) {
@@ -936,7 +965,7 @@ static bool utils__use_color(FILE *out) {
 
 /* localtime() hands back a shared static buffer; the _r / _s variants keep the
  * logger usable from more than one thread. */
-static void utils__timestamp(char *buf, size_t bufsz) {
+static void utils__strftime_now(char *buf, size_t bufsz, const char *fmt) {
     time_t t = time(NULL);
     struct tm tm_buf;
     struct tm *tm_info;
@@ -945,20 +974,53 @@ static void utils__timestamp(char *buf, size_t bufsz) {
 #else
     tm_info = localtime_r(&t, &tm_buf);
 #endif
-    if (!tm_info || strftime(buf, bufsz, "%H:%M:%S", tm_info) == 0)
-        snprintf(buf, bufsz, "--:--:--");
+    if (!tm_info || strftime(buf, bufsz, fmt, tm_info) == 0)
+        snprintf(buf, bufsz, "?");
+}
+
+/* The name the shell reports, not the account the process runs as: a build
+ * log is read by a person, and sudo should not rewrite the author. */
+static const char *utils__username(void) {
+#ifdef _WIN32
+    const char *name = getenv("USERNAME");
+#else
+    const char *name = getenv("LOGNAME");
+    if (!name || !*name) name = getenv("USER");
+#endif
+    return (name && *name) ? name : "unknown";
 }
 
 static void utils__log_prefix(FILE *out, const char *color, const char *label,
                               const char *file, int line) {
-    char time_buf[16];
-    utils__timestamp(time_buf, sizeof(time_buf));
+    unsigned    fields = UTILS__FIELDS;
+    bool        color_on = utils__use_color(out);
+    const char *on  = color_on ? color        : "";
+    const char *dim = color_on ? "\x1b[90m"   : "";
+    const char *off = color_on ? "\x1b[0m"    : "";
 
-    if (utils__use_color(out))
-        fprintf(out, "%s[%s] [%s]\x1b[0m \x1b[90m[%s:%d]\x1b[0m ",
-                color, time_buf, label, file, line);
-    else
-        fprintf(out, "[%s] [%s] [%s:%d] ", time_buf, label, file, line);
+    if (fields & LOG_FIELD_COUNT)
+        fprintf(out, "%s[%llu]%s ", dim, (unsigned long long)++UTILS__RECORDS, off);
+
+    if (fields & LOG_FIELD_DATE) {
+        char buf[32];
+        utils__strftime_now(buf, sizeof(buf), "%Y-%m-%d (%a)");
+        fprintf(out, "%s[%s]%s ", on, buf, off);
+    }
+
+    if (fields & LOG_FIELD_TIME) {
+        char buf[16];
+        utils__strftime_now(buf, sizeof(buf), "%H:%M:%S");
+        fprintf(out, "%s[%s]%s ", on, buf, off);
+    }
+
+    if (fields & LOG_FIELD_LEVEL)
+        fprintf(out, "%s[%s]%s ", on, label, off);
+
+    if (fields & LOG_FIELD_USER)
+        fprintf(out, "%s[%s]%s ", dim, utils__username(), off);
+
+    if (fields & LOG_FIELD_LOCATION)
+        fprintf(out, "%s[%s:%d]%s ", dim, file, line, off);
 }
 
 void utils_log_impl(LogLevel level, const char *file, int line,
@@ -966,6 +1028,7 @@ void utils_log_impl(LogLevel level, const char *file, int line,
     if (level < UTILS__MIN_LEVEL) return;
 
     FILE *out = UTILS__OUTPUT ? UTILS__OUTPUT : stderr;
+
     utils__log_prefix(out, UTILS__COLORS[level], UTILS__LABELS[level], file, line);
 
     va_list args;
@@ -978,6 +1041,7 @@ void utils_log_impl(LogLevel level, const char *file, int line,
 
 void utils_panic_impl(const char *file, int line, const char *fmt, ...) {
     FILE *out = UTILS__OUTPUT ? UTILS__OUTPUT : stderr;
+
     utils__log_prefix(out, UTILS__COLORS[LOG_CRITICAL], "PANIC", file, line);
 
     va_list args;

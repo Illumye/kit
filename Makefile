@@ -53,14 +53,11 @@ test-all: check-c11 test test-asan
 
 # --- examples -----------------------------------------------------------------
 
-examples: example_cli bit_fields
+examples: example_cli
 
 example_cli: example_cli.c utils.h
 	$(CC) $(CFLAGS) $< -o $@
 
-bit_fields: bit_fields.c
-	$(CC) $(CFLAGS) $< -o $@
-
 clean:
-	rm -f $(TEST_BIN) $(TEST_ASAN) example_cli bit_fields .compile-check.c
+	rm -f $(TEST_BIN) $(TEST_ASAN) example_cli .compile-check.c
 	rm -f utest-tmp-*

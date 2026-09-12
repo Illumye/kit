@@ -48,7 +48,7 @@ Every other macro in the library is portable.
 **`cmd_capture` captures stdout only.** stderr passes through to the parent.
 Capturing both, or merging them, needs a second pipe and a select loop.
 
-**Logging is thread-safe per call, not atomic.** The timestamp now uses
+**Logging is thread-safe per call, not atomic.** The timestamp uses
 `localtime_r`, but two threads logging at once can still interleave their
 output, because each record is written with several `fprintf` calls.
 
@@ -59,10 +59,6 @@ only ever been compiled and run on Linux.
 
 **Continuous integration.** A workflow running `make test-all` under both gcc
 and clang, so the guarantees the test suite provides are actually enforced.
-
-**`bit_fields.c` is an orphan.** It prototypes a bit-flag logging scheme that
-overlaps section 1 without being integrated. Either fold the idea into the
-logger or drop the file.
 
 **No README.** The header documents itself section by section, but there is no
 entry point explaining what the library is or how to build the tests.

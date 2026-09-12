@@ -77,6 +77,106 @@ TEST(log_omits_ansi_codes_when_not_a_tty) {
     remove(TMP_TXT);
 }
 
+/* Reads back what one LOG call wrote, with colour off. */
+static char *log_once(unsigned fields, LogLevel level, const char *message) {
+    FILE *fp = fopen(TMP_TXT, "w");
+    if (!fp) return NULL;
+
+    log_set_output(fp);
+    log_set_level(LOG_DEBUG);
+    log_set_color(LOG_COLOR_NEVER);
+    log_set_fields(fields);
+    utils_log_impl(level, "src.c", 7, "%s", message);
+    fclose(fp);
+
+    log_set_output(NULL);
+    log_set_level(LOG_CRITICAL);
+    log_set_fields(LOG_FIELDS_DEFAULT);
+    return read_file(TMP_TXT);
+}
+
+TEST(log_fields_select_the_prefix) {
+    char *line = log_once(LOG_FIELDS_NONE, LOG_INFO, "bare");
+    if (CHECK(line != NULL)) {
+        CHECK_STR(line, "bare\n");          /* nothing but the message */
+        free(line);
+    }
+
+    line = log_once(LOG_FIELD_LEVEL, LOG_WARNING, "msg");
+    if (CHECK(line != NULL)) {
+        CHECK_STR(line, "[WARN] msg\n");
+        free(line);
+    }
+
+    line = log_once(LOG_FIELD_LOCATION, LOG_INFO, "msg");
+    if (CHECK(line != NULL)) {
+        CHECK_STR(line, "[src.c:7] msg\n");
+        free(line);
+    }
+
+    line = log_once(LOG_FIELD_USER, LOG_INFO, "msg");
+    if (CHECK(line != NULL)) {
+        CHECK(strstr(line, "msg") != NULL);
+        CHECK_INT(line[0], '[');
+        CHECK(strstr(line, "[]") == NULL);  /* never an empty user field */
+        free(line);
+    }
+
+    line = log_once(LOG_FIELD_DATE, LOG_INFO, "msg");
+    if (CHECK(line != NULL)) {
+        CHECK_INT(strlen(line), strlen("[2026-09-12 (Sat)] msg\n"));
+        CHECK(strstr(line, "-") != NULL);
+        free(line);
+    }
+
+    /* The default must stay exactly what it has always been. */
+    line = log_once(LOG_FIELDS_DEFAULT, LOG_ERROR, "msg");
+    if (CHECK(line != NULL)) {
+        CHECK_INT(strlen(line), strlen("[14:05:42] [ERROR] [src.c:7] msg\n"));
+        CHECK(strstr(line, "[ERROR] [src.c:7] msg") != NULL);
+        free(line);
+    }
+    remove(TMP_TXT);
+}
+
+TEST(log_field_count_numbers_the_records) {
+    FILE *fp = fopen(TMP_TXT, "w");
+    if (!CHECK(fp != NULL)) return;
+
+    log_set_output(fp);
+    log_set_level(LOG_DEBUG);
+    log_set_color(LOG_COLOR_NEVER);
+    log_set_fields(LOG_FIELD_COUNT);
+
+    unsigned long long first = 0;
+    for (int i = 0; i < 3; i++) LOG(LOG_INFO, "tick");
+    fclose(fp);
+    log_set_output(NULL);
+    log_set_level(LOG_CRITICAL);
+    log_set_fields(LOG_FIELDS_DEFAULT);
+
+    char *text = read_file(TMP_TXT);
+    if (!CHECK(text != NULL)) return;
+
+    /* Consecutive, whatever the counter started at. */
+    String_View rest = SV(text), line;
+    int seen = 0;
+    while (sv_try_chop_by_delim(&rest, '\n', &line)) {
+        if (line.count == 0) continue;
+        uint64_t n = 0;
+        String_View digits = sv_chop_by_delim(&line, ']');
+        sv_chop_left(&digits, 1);            /* drop the '[', in place */
+        if (!CHECK(sv_to_u64(digits, &n))) break;
+        if (seen == 0) first = n;
+        else           CHECK_INT(n, first + (unsigned long long)seen);
+        seen++;
+    }
+    CHECK_INT(seen, 3);
+
+    free(text);
+    remove(TMP_TXT);
+}
+
 /* --- files ---------------------------------------------------------------- */
 
 TEST(write_then_read_roundtrip) {
@@ -205,6 +305,8 @@ int main(void) {
     utest_begin("files");
     RUN(log_level_filters_lower_levels);
     RUN(log_omits_ansi_codes_when_not_a_tty);
+    RUN(log_fields_select_the_prefix);
+    RUN(log_field_count_numbers_the_records);
     RUN(write_then_read_roundtrip);
     RUN(read_file_reports_size_and_keeps_embedded_nuls);
     RUN(read_file_handles_empty_file);
