@@ -38,8 +38,9 @@ space carries its own `Arena`.
 both yield two fields. Distinguishing them needs a state bit hidden inside the
 `String_View`, which costs more than it is worth.
 
-**`da_contains` needs GNU statement expressions.** It is compiled out on MSVC.
-Every other macro in the library is portable.
+**`da_contains` needs GNU statement expressions.** It is compiled out on MSVC,
+where `da_index_of` is the portable equivalent. An expression-valued macro
+cannot be written without them.
 
 **`cmd_capture` captures stdout only.** stderr passes through to the parent.
 Capturing both, or merging them, needs a second pipe and a select loop.

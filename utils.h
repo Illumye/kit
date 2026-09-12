@@ -348,8 +348,25 @@ int needs_rebuild(const char *output, const char **inputs, size_t n_inputs);
 #define da_foreach(Type, it, da) \
     for (Type *it = (da)->items; it < (da)->items + (da)->count; ++it)
 
+/* Linear search writing the index of the first match into `out_index`, or
+ * (da)->count when there is none. Portable everywhere, unlike da_contains.
+ * Example:
+ *   size_t at;
+ *   da_index_of(&my_array, 42, at);
+ *   if (at < my_array.count) { ... }
+ */
+#define da_index_of(da, val, out_index)                     \
+    do {                                                    \
+        (out_index) = (da)->count;                          \
+        for (size_t _k = 0; _k < (da)->count; _k++)         \
+            if ((da)->items[_k] == (val)) {                 \
+                (out_index) = _k;                           \
+                break;                                      \
+            }                                               \
+    } while (0)
+
 /* Linear search - evaluates to true if any element == val.
- * Requires GCC/Clang (statement expression).
+ * Requires GCC/Clang (statement expression); use da_index_of elsewhere.
  * Example:
  *   if (da_contains(&my_array, 42)) { ... }
  */

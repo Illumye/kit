@@ -286,6 +286,14 @@ TEST(da_append_many_and_remove) {
     CHECK(da_contains(&a, 20));
     CHECK(!da_contains(&a, 10));
 
+    /* The portable counterpart reports the position, count when absent. */
+    size_t at;
+    da_index_of(&a, 20, at);
+    CHECK_INT(at, 1);
+    da_index_of(&a, 40, at);
+    CHECK_INT(at, 0);              /* first match */
+    da_index_of(&a, 10, at);
+    CHECK_INT(at, a.count);        /* absent */
     da_free(&a);
 }
 
