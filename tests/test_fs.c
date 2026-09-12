@@ -123,6 +123,37 @@ TEST(copy_file_carries_the_permission_bits) {
 #endif
 }
 
+/* remove_file must refuse a directory and remove_dir must refuse a file, on
+ * every platform. POSIX remove() blurs that line, Windows remove() draws it
+ * elsewhere again, which is why neither is used. */
+TEST(remove_file_and_remove_dir_do_not_overlap) {
+    char dir[512], file[512];
+    path_join(dir, sizeof(dir), SANDBOX, "removable");
+    CHECK(mkdir_p(dir));
+    path_join(file, sizeof(file), SANDBOX, "removable.txt");
+    write_text(file, "x");
+
+    CHECK(!remove_file(dir));        /* a directory is not a file */
+    CHECK(dir_exists(dir));
+    CHECK(!remove_dir(file));        /* and a file is not a directory */
+    CHECK(file_exists(file));
+
+    CHECK(remove_dir(dir));          /* empty, so it goes */
+    CHECK(!dir_exists(dir));
+    CHECK(remove_file(file));
+    CHECK(!file_exists(file));
+
+    CHECK(!remove_dir(dir));         /* already gone */
+
+    /* A directory with something in it stays put. */
+    char nested[512];
+    path_join(nested, sizeof(nested), SANDBOX, "full");
+    CHECK(mkdir_p(nested));
+    write_text(join(nested, "child"), "x");
+    CHECK(!remove_dir(nested));
+    CHECK(dir_exists(nested));
+}
+
 TEST(remove_and_rename) {
     char a[512], b[512];
     path_join(a, sizeof(a), SANDBOX, "a.txt");
@@ -265,10 +296,10 @@ static void remove_tree(const char *path) {
         char child[512];
         path_join(child, sizeof(child), path, list.items[i]);
         if (file_kind(child) == FILE_KIND_DIRECTORY) remove_tree(child);
-        else                                          remove(child);
+        else                                         remove_file(child);
     }
     file_list_free(&list);
-    remove(path);
+    remove_dir(path);
 }
 
 int main(void) {
@@ -286,6 +317,7 @@ int main(void) {
     RUN(mkdir_p_handles_odd_paths);
     RUN(copy_file_reproduces_the_content);
     RUN(copy_file_carries_the_permission_bits);
+    RUN(remove_file_and_remove_dir_do_not_overlap);
     RUN(remove_and_rename);
     RUN(read_dir_lists_sorted_entries);
     RUN(read_dir_appends_and_leaves_the_list_alone_on_error);

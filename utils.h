@@ -236,9 +236,16 @@ bool mkdir_p(const char *path);
  * bits of the source are carried over. Returns false on error. */
 bool copy_file(const char *src, const char *dst);
 
-/* Removes a file. Returns false when it did not exist, which is why an
- * idempotent caller should test with file_exists first. */
+/* Removes a file, never a directory: POSIX remove() would take an empty
+ * directory too, Windows remove() would not, so neither is used. Returns
+ * false when the path did not exist, which is why an idempotent caller tests
+ * with file_exists first. */
 bool remove_file(const char *path);
+
+/* Removes an empty directory. Recursion is left to the caller: a library
+ * function that deletes a tree is one typo away from deleting the wrong one,
+ * and the loop is four lines with read_dir. */
+bool remove_dir(const char *path);
 
 /* Renames or moves a file, replacing dst if it exists. Both paths must sit on
  * the same filesystem. */
@@ -1521,9 +1528,29 @@ defer:
 }
 
 bool remove_file(const char *path) {
-    if (remove(path) == 0) return true;
+#ifdef _WIN32
+    if (DeleteFileA(path)) return true;
+    LOG(LOG_ERROR, "remove_file: cannot remove '%s' (err=%lu)", path, GetLastError());
+    return false;
+#else
+    /* unlink rather than remove: remove() also takes an empty directory on
+     * POSIX and not on Windows, and one behaviour on both is worth more. */
+    if (unlink(path) == 0) return true;
     LOG(LOG_ERROR, "remove_file: cannot remove '%s': %s", path, strerror(errno));
     return false;
+#endif
+}
+
+bool remove_dir(const char *path) {
+#ifdef _WIN32
+    if (RemoveDirectoryA(path)) return true;
+    LOG(LOG_ERROR, "remove_dir: cannot remove '%s' (err=%lu)", path, GetLastError());
+    return false;
+#else
+    if (rmdir(path) == 0) return true;
+    LOG(LOG_ERROR, "remove_dir: cannot remove '%s': %s", path, strerror(errno));
+    return false;
+#endif
 }
 
 bool rename_file(const char *from, const char *to) {
