@@ -77,6 +77,7 @@
 #else
 #    include <unistd.h>
 #    include <dirent.h>
+#    include <poll.h>
 #    include <sys/wait.h>
 #    include <sys/stat.h>
 #    include <fcntl.h>
@@ -815,19 +816,25 @@ Proc cmd_run_async(Cmd *c);
 /* Wait for an async process. Returns false if the child exited non-zero. */
 bool proc_wait(Proc p);
 
-/* Run synchronously and capture the child's output into sb.
+/* Run synchronously and capture the child's output.
  *
  *   cmd_capture         stdout only; stderr passes through to the parent
  *   cmd_capture_merged  stdout and stderr interleaved, as a terminal sees them
+ *   cmd_capture_ex      each stream into its own builder
  *
- * Merging uses a single pipe, so the two streams cannot deadlock against each
- * other. Capturing them into two separate buffers would need concurrent reads
- * and is deliberately not offered.
+ * cmd_capture_ex takes either builder as NULL, in which case that stream is
+ * left alone and passes through. Passing the same builder for both is the
+ * same as cmd_capture_merged.
  *
- * Returns false when the child fails to start or exits non-zero. Whatever the
- * child managed to write is still appended to sb. */
+ * Two pipes are drained together rather than one after the other: reading
+ * them in sequence deadlocks as soon as the child fills the one nobody is
+ * reading, and 64 KiB of diagnostics is not a rare thing for a compiler.
+ *
+ * All three return false when the child fails to start or exits non-zero.
+ * Whatever it managed to write is still appended. */
 bool cmd_capture(Cmd *c, StringBuilder *sb);
 bool cmd_capture_merged(Cmd *c, StringBuilder *sb);
+bool cmd_capture_ex(Cmd *c, StringBuilder *out, StringBuilder *err);
 
 /* Variadic shorthand — terminate with NULL.
  * cmd_run_args("ls", "-la", NULL); */
@@ -2376,42 +2383,99 @@ bool proc_wait(Proc p) {
     return true;
 }
 
-static bool utils__cmd_capture(Cmd *c, StringBuilder *sb, bool merge_stderr) {
-    HANDLE pipe_r, pipe_w;
+/* Windows has no poll for anonymous pipes, so the two are polled with
+ * PeekNamedPipe. Blocking on a ReadFile from one while the child fills the
+ * other is the deadlock this avoids; the millisecond of sleep is what keeps
+ * the loop from spinning a core while the child thinks. */
+static bool utils__cmd_capture(Cmd *c, StringBuilder *out, StringBuilder *err) {
+    bool merged   = (out != NULL && out == err);
+    bool need_out = (out != NULL);
+    bool need_err = (err != NULL && !merged);
+
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
-    if (!CreatePipe(&pipe_r, &pipe_w, &sa, 0)) {
-        LOG(LOG_ERROR, "cmd_capture: CreatePipe failed");
-        return false;
+    HANDLE out_r = NULL, out_w = NULL, err_r = NULL, err_w = NULL;
+
+    if (need_out) {
+        if (!CreatePipe(&out_r, &out_w, &sa, 0)) {
+            LOG(LOG_ERROR, "cmd_capture: CreatePipe failed (err=%lu)", GetLastError());
+            return false;
+        }
+        SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
     }
-    SetHandleInformation(pipe_r, HANDLE_FLAG_INHERIT, 0);
+    if (need_err) {
+        if (!CreatePipe(&err_r, &err_w, &sa, 0)) {
+            LOG(LOG_ERROR, "cmd_capture: CreatePipe failed (err=%lu)", GetLastError());
+            if (out_r) { CloseHandle(out_r); CloseHandle(out_w); }
+            return false;
+        }
+        SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);
+    }
 
     char *cmdline = utils__cmd_to_cmdline(c);
 
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
     ZeroMemory(&si, sizeof(si)); si.cb = sizeof(si);
-    si.hStdOutput = pipe_w;
-    si.hStdError  = merge_stderr ? pipe_w : GetStdHandle(STD_ERROR_HANDLE);
+    /* With STARTF_USESTDHANDLES all three must be valid, inherited ones
+     * included, or the child starts with no console at all. */
+    si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = need_out ? out_w : GetStdHandle(STD_OUTPUT_HANDLE);
+    si.hStdError  = merged   ? out_w
+                  : need_err ? err_w : GetStdHandle(STD_ERROR_HANDLE);
     si.dwFlags    = STARTF_USESTDHANDLES;
     ZeroMemory(&pi, sizeof(pi));
 
-    bool ok = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0,
-                              NULL, NULL, &si, &pi);
-    CloseHandle(pipe_w);
+    bool started = CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0,
+                                  NULL, NULL, &si, &pi);
     free(cmdline);
+    if (out_w) CloseHandle(out_w);
+    if (err_w) CloseHandle(err_w);
 
-    if (!ok) {
-        LOG(LOG_ERROR, "cmd_capture: CreateProcess failed");
-        CloseHandle(pipe_r);
+    if (!started) {
+        LOG(LOG_ERROR, "cmd_capture: CreateProcess failed (err=%lu)", GetLastError());
+        if (out_r) CloseHandle(out_r);
+        if (err_r) CloseHandle(err_r);
         return false;
     }
     CloseHandle(pi.hThread);
 
+    HANDLE         handles[2];
+    StringBuilder *sinks[2];
+    int            n = 0;
+    if (need_out) { handles[n] = out_r; sinks[n] = out; n++; }
+    if (need_err) { handles[n] = err_r; sinks[n] = err; n++; }
+
     char buf[4096];
-    DWORD nread;
-    while (ReadFile(pipe_r, buf, sizeof(buf), &nread, NULL) && nread > 0)
-        sb_append_n(sb, buf, nread);
-    CloseHandle(pipe_r);
+    int  still_open = n;
+    while (still_open > 0) {
+        bool progress = false;
+
+        for (int i = 0; i < n; i++) {
+            if (handles[i] == NULL) continue;
+
+            DWORD available = 0;
+            if (!PeekNamedPipe(handles[i], NULL, 0, NULL, &available, NULL)) {
+                CloseHandle(handles[i]);   /* the child closed its end */
+                handles[i] = NULL;
+                still_open--;
+                continue;
+            }
+            if (available == 0) continue;
+
+            DWORD got = 0;
+            if (available > sizeof(buf)) available = sizeof(buf);
+            if (!ReadFile(handles[i], buf, available, &got, NULL) || got == 0) {
+                CloseHandle(handles[i]);
+                handles[i] = NULL;
+                still_open--;
+                continue;
+            }
+            sb_append_n(sinks[i], buf, got);
+            progress = true;
+        }
+
+        if (!progress && still_open > 0) Sleep(1);
+    }
 
     return proc_wait(pi.hProcess);
 }
@@ -2466,10 +2530,24 @@ bool proc_wait(Proc p) {
 
 /* One pipe carries both streams when they are merged, so the child can never
  * block on a full pipe that the parent is not reading. */
-static bool utils__cmd_capture(Cmd *c, StringBuilder *sb, bool merge_stderr) {
-    int pipefd[2];
-    if (pipe(pipefd) < 0) {
+/* Both pipes are drained by one poll loop. Reading them in sequence would
+ * deadlock the moment the child fills the one nobody is reading, and a
+ * compiler emitting a wall of warnings does exactly that. */
+static bool utils__cmd_capture(Cmd *c, StringBuilder *out, StringBuilder *err) {
+    bool merged   = (out != NULL && out == err);
+    bool need_out = (out != NULL);
+    bool need_err = (err != NULL && !merged);
+
+    int op[2] = { -1, -1 };
+    int ep[2] = { -1, -1 };
+
+    if (need_out && pipe(op) < 0) {
         LOG(LOG_ERROR, "cmd_capture: pipe failed: %s", strerror(errno));
+        return false;
+    }
+    if (need_err && pipe(ep) < 0) {
+        LOG(LOG_ERROR, "cmd_capture: pipe failed: %s", strerror(errno));
+        if (op[0] >= 0) { close(op[0]); close(op[1]); }
         return false;
     }
 
@@ -2479,16 +2557,24 @@ static bool utils__cmd_capture(Cmd *c, StringBuilder *sb, bool merge_stderr) {
 
     if (pid < 0) {
         LOG(LOG_ERROR, "cmd_capture: fork failed: %s", strerror(errno));
-        close(pipefd[0]);
-        close(pipefd[1]);
+        if (op[0] >= 0) { close(op[0]); close(op[1]); }
+        if (ep[0] >= 0) { close(ep[0]); close(ep[1]); }
         return false;
     }
 
     if (pid == 0) {
-        close(pipefd[0]);
-        dup2(pipefd[1], STDOUT_FILENO);
-        if (merge_stderr) dup2(pipefd[1], STDERR_FILENO);
-        close(pipefd[1]);
+        if (op[0] >= 0) close(op[0]);
+        if (ep[0] >= 0) close(ep[0]);
+
+        if (need_out) {
+            dup2(op[1], STDOUT_FILENO);
+            if (merged) dup2(op[1], STDERR_FILENO);
+        }
+        if (need_err) dup2(ep[1], STDERR_FILENO);
+
+        if (op[1] >= 0) close(op[1]);
+        if (ep[1] >= 0) close(ep[1]);
+
         execvp(c->items[0], (char *const *)(void *)c->items);
         if (LOG_ERROR >= UTILS__MIN_LEVEL)
             dprintf(STDERR_FILENO, "cmd_capture: execvp '%s' failed: %s\n",
@@ -2496,16 +2582,36 @@ static bool utils__cmd_capture(Cmd *c, StringBuilder *sb, bool merge_stderr) {
         _exit(127);
     }
 
-    close(pipefd[1]);
+    if (op[1] >= 0) close(op[1]);
+    if (ep[1] >= 0) close(ep[1]);
 
-    char buf[4096];
-    for (;;) {
-        ssize_t nread = read(pipefd[0], buf, sizeof(buf));
-        if (nread > 0) { sb_append_n(sb, buf, (size_t)nread); continue; }
-        if (nread < 0 && errno == EINTR) continue;   /* a signal, not the end */
-        break;
+    struct pollfd  fds[2];
+    StringBuilder *sinks[2];
+    nfds_t         n = 0;
+    if (need_out) { fds[n].fd = op[0]; fds[n].events = POLLIN; sinks[n] = out; n++; }
+    if (need_err) { fds[n].fd = ep[0]; fds[n].events = POLLIN; sinks[n] = err; n++; }
+
+    char   buf[4096];
+    nfds_t still_open = n;
+    while (still_open > 0) {
+        if (poll(fds, n, -1) < 0) {
+            if (errno == EINTR) continue;
+            LOG(LOG_ERROR, "cmd_capture: poll failed: %s", strerror(errno));
+            break;
+        }
+        for (nfds_t i = 0; i < n; i++) {
+            if (fds[i].fd < 0 || fds[i].revents == 0) continue;
+
+            ssize_t nread = read(fds[i].fd, buf, sizeof(buf));
+            if (nread > 0) { sb_append_n(sinks[i], buf, (size_t)nread); continue; }
+            if (nread < 0 && errno == EINTR) continue;
+
+            close(fds[i].fd);      /* end of stream, or an error we cannot use */
+            fds[i].fd = -1;
+            still_open--;
+        }
     }
-    close(pipefd[0]);
+    for (nfds_t i = 0; i < n; i++) if (fds[i].fd >= 0) close(fds[i].fd);
 
     return proc_wait(pid);
 }
@@ -2513,11 +2619,15 @@ static bool utils__cmd_capture(Cmd *c, StringBuilder *sb, bool merge_stderr) {
 #endif /* _WIN32 / POSIX */
 
 bool cmd_capture(Cmd *c, StringBuilder *sb) {
-    return utils__cmd_capture(c, sb, false);
+    return utils__cmd_capture(c, sb, NULL);
 }
 
 bool cmd_capture_merged(Cmd *c, StringBuilder *sb) {
-    return utils__cmd_capture(c, sb, true);
+    return utils__cmd_capture(c, sb, sb);
+}
+
+bool cmd_capture_ex(Cmd *c, StringBuilder *out, StringBuilder *err) {
+    return utils__cmd_capture(c, out, err);
 }
 
 bool cmd_run(Cmd *c) {

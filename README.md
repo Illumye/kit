@@ -24,7 +24,7 @@ link, apart from `-lm` when the vector maths is in use.
 | Vector maths | `Vec2` and `Vec3` |
 | CLI | Option parsing with grouped short flags, and generated usage text |
 | String builder | Growable text buffer with `printf` formatting |
-| Commands | Run a child process, synchronously, asynchronously, or capturing its output |
+| Commands | Run a child process, synchronously, asynchronously, or capturing either stream |
 | Hash map | String keys, open addressing |
 | Paths | `basename`, `dirname`, `join`, all bounded |
 

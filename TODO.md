@@ -43,10 +43,6 @@ both yield two fields. Distinguishing them needs a state bit hidden inside the
 where `da_index_of` is the portable equivalent. An expression-valued macro
 cannot be written without them.
 
-**Separate stdout and stderr capture is not offered.** `cmd_capture` takes
-stdout and `cmd_capture_merged` takes both interleaved. Two buffers would need
-concurrent reads on two pipes, or the child blocks once one of them fills.
-
 **Windows is exercised through wine, not on Windows.** `make check-windows`
 cross-compiles the suite with mingw-w64 and runs it under wine, so every
 `_WIN32` branch is compiled and executed. That is not the same as a real

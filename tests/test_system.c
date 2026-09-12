@@ -237,6 +237,69 @@ TEST(cmd_capture_merged_interleaves_both_streams) {
     cmd_free(&c);
 }
 
+TEST(cmd_capture_ex_separates_the_streams) {
+    Cmd c = {0};
+    cmd_extend(&c, "sh", "-c", "echo to-out; echo to-err >&2", NULL);
+
+    StringBuilder out = {0}, err = {0};
+    CHECK(cmd_capture_ex(&c, &out, &err));
+    CHECK_STR(sb_cstr(&out), "to-out\n");
+    CHECK_STR(sb_cstr(&err), "to-err\n");
+
+    /* NULL leaves a stream alone. */
+    sb_reset(&out);
+    CHECK(cmd_capture_ex(&c, &out, NULL));
+    CHECK_STR(sb_cstr(&out), "to-out\n");
+
+    sb_reset(&err);
+    CHECK(cmd_capture_ex(&c, NULL, &err));
+    CHECK_STR(sb_cstr(&err), "to-err\n");
+
+    /* The same builder for both is what cmd_capture_merged does. */
+    sb_reset(&out);
+    CHECK(cmd_capture_ex(&c, &out, &out));
+    CHECK(sv_contains(SV(sb_cstr(&out)), SV("to-out\n")));
+    CHECK(sv_contains(SV(sb_cstr(&out)), SV("to-err\n")));
+
+    /* Output survives a failing child. */
+    sb_reset(&out); sb_reset(&err);
+    cmd_reset(&c);
+    cmd_extend(&c, "sh", "-c", "echo o; echo e >&2; exit 4", NULL);
+    CHECK(!cmd_capture_ex(&c, &out, &err));
+    CHECK_STR(sb_cstr(&out), "o\n");
+    CHECK_STR(sb_cstr(&err), "e\n");
+
+    sb_free(&out); sb_free(&err);
+    cmd_free(&c);
+}
+
+/* The reason the two pipes are drained together. A child that fills both well
+ * past the pipe buffer deadlocks anything that reads one to the end first:
+ * it blocks writing to the pipe nobody is draining. 4 MiB against a 64 KiB
+ * buffer leaves no doubt. */
+TEST(cmd_capture_ex_does_not_deadlock_on_a_full_pipe) {
+    Cmd c = {0};
+    cmd_extend(&c, "sh", "-c",
+               "yes 'stdout line padding padding padding' | head -c 4000000; "
+               "yes 'stderr line padding padding padding' | head -c 4000000 >&2",
+               NULL);
+
+    StringBuilder out = {0}, err = {0};
+    Stopwatch sw = sw_start();
+    CHECK(cmd_capture_ex(&c, &out, &err));
+    double ms = sw_elapsed_ms(sw);
+
+    CHECK_INT(out.count, 4000000);
+    CHECK_INT(err.count, 4000000);
+    CHECK(sv_starts_with_cstr(SV(sb_cstr(&out)), "stdout line"));
+    CHECK(sv_starts_with_cstr(SV(sb_cstr(&err)), "stderr line"));
+    if (!CHECK(ms < (UTEST_SANITIZED ? 30000.0 : 10000.0)))
+        printf("      8 MiB took %.0f ms\n", ms);
+
+    sb_free(&out); sb_free(&err);
+    cmd_free(&c);
+}
+
 TEST(cmd_run_reports_the_exit_status) {
     CHECK(cmd_run_args("true", NULL));
     CHECK(!cmd_run_args("false", NULL));
@@ -277,6 +340,60 @@ TEST(cmd_run_async_runs_children_in_parallel) {
     cmd_free(&a);
     cmd_free(&b);
 }
+#else /* _WIN32 */
+
+/* The Windows command paths would otherwise be compiled and never run. cmd.exe
+ * stands in for the shell; the assertions avoid exact matching because cmd
+ * emits CRLF and leaves a space before a redirect. */
+TEST(cmd_capture_on_windows) {
+    Cmd c = {0};
+    cmd_extend(&c, "cmd", "/c", "echo to-out& echo to-err 1>&2", NULL);
+
+    StringBuilder out = {0}, err = {0};
+    CHECK(cmd_capture_ex(&c, &out, &err));
+
+    /* The point of two pipes: neither stream leaks into the other. */
+    CHECK(sv_contains(SV(sb_cstr(&out)), SV("to-out")));
+    CHECK(sv_contains(SV(sb_cstr(&err)), SV("to-err")));
+    CHECK(!sv_contains(SV(sb_cstr(&out)), SV("to-err")));
+    CHECK(!sv_contains(SV(sb_cstr(&err)), SV("to-out")));
+
+    sb_reset(&out);
+    CHECK(cmd_capture_merged(&c, &out));
+    CHECK(sv_contains(SV(sb_cstr(&out)), SV("to-out")));
+    CHECK(sv_contains(SV(sb_cstr(&out)), SV("to-err")));
+
+    sb_reset(&out);
+    CHECK(cmd_capture(&c, &out));
+    CHECK(sv_contains(SV(sb_cstr(&out)), SV("to-out")));
+    CHECK(!sv_contains(SV(sb_cstr(&out)), SV("to-err")));   /* passed through */
+
+    sb_free(&out); sb_free(&err);
+    cmd_free(&c);
+}
+
+/* More than one pipe buffer on both streams at once, which is the case the
+ * poll-free PeekNamedPipe loop exists for. */
+TEST(cmd_capture_on_windows_does_not_deadlock) {
+    Cmd c = {0};
+    cmd_extend(&c, "cmd", "/c",
+               "for /L %i in (1,1,4000) do @(echo out padding padding padding"
+               "& echo err padding padding padding 1>&2)", NULL);
+
+    StringBuilder out = {0}, err = {0};
+    CHECK(cmd_capture_ex(&c, &out, &err));
+    CHECK(out.count > 100000);
+    CHECK(err.count > 100000);
+
+    sb_free(&out); sb_free(&err);
+    cmd_free(&c);
+}
+
+TEST(cmd_run_status_on_windows) {
+    CHECK(cmd_run_args("cmd", "/c", "exit 0", NULL));
+    CHECK(!cmd_run_args("cmd", "/c", "exit 3", NULL));
+}
+
 #endif /* !_WIN32 */
 
 /* --- stopwatch ------------------------------------------------------------ */
@@ -349,9 +466,15 @@ int main(void) {
     RUN(cmd_capture_collects_stdout);
     RUN(cmd_capture_handles_output_larger_than_the_pipe_buffer);
     RUN(cmd_capture_merged_interleaves_both_streams);
+    RUN(cmd_capture_ex_separates_the_streams);
+    RUN(cmd_capture_ex_does_not_deadlock_on_a_full_pipe);
     RUN(cmd_run_reports_the_exit_status);
     RUN(cmd_reset_keeps_the_allocation);
     RUN(cmd_run_async_runs_children_in_parallel);
+#else
+    RUN(cmd_capture_on_windows);
+    RUN(cmd_capture_on_windows_does_not_deadlock);
+    RUN(cmd_run_status_on_windows);
 #endif
     RUN(stopwatch_measures_forward);
     RUN(scalar_helpers);
