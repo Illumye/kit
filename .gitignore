@@ -1,0 +1,10 @@
+# Build artifacts
+*.o
+*.a
+*.so
+*.exe
+
+# Example / test binaries
+/example_cli
+/bit_fields
+/tests/run_*
