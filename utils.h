@@ -990,6 +990,26 @@ static const char *utils__username(void) {
     return (name && *name) ? name : "unknown";
 }
 
+/* stdio locks per call, so a record built from several fprintf calls can be
+ * split down the middle by another thread. Holding the lock for the whole
+ * record is what keeps a line intact. */
+static void utils__stream_lock(FILE *out) {
+#ifdef _WIN32
+    _lock_file(out);
+#else
+    flockfile(out);
+#endif
+}
+
+static void utils__stream_unlock(FILE *out) {
+#ifdef _WIN32
+    _unlock_file(out);
+#else
+    funlockfile(out);
+#endif
+}
+
+/* Called with the stream already locked. */
 static void utils__log_prefix(FILE *out, const char *color, const char *label,
                               const char *file, int line) {
     unsigned    fields = UTILS__FIELDS;
@@ -1029,6 +1049,7 @@ void utils_log_impl(LogLevel level, const char *file, int line,
 
     FILE *out = UTILS__OUTPUT ? UTILS__OUTPUT : stderr;
 
+    utils__stream_lock(out);
     utils__log_prefix(out, UTILS__COLORS[level], UTILS__LABELS[level], file, line);
 
     va_list args;
@@ -1037,11 +1058,13 @@ void utils_log_impl(LogLevel level, const char *file, int line,
     va_end(args);
 
     fputc('\n', out);
+    utils__stream_unlock(out);
 }
 
 void utils_panic_impl(const char *file, int line, const char *fmt, ...) {
     FILE *out = UTILS__OUTPUT ? UTILS__OUTPUT : stderr;
 
+    utils__stream_lock(out);
     utils__log_prefix(out, UTILS__COLORS[LOG_CRITICAL], "PANIC", file, line);
 
     va_list args;
@@ -1051,6 +1074,7 @@ void utils_panic_impl(const char *file, int line, const char *fmt, ...) {
 
     fprintf(out, "\nAborting...\n");
     fflush(out);
+    utils__stream_unlock(out);
     abort();
 }
 

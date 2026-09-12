@@ -48,10 +48,6 @@ Every other macro in the library is portable.
 **`cmd_capture` captures stdout only.** stderr passes through to the parent.
 Capturing both, or merging them, needs a second pipe and a select loop.
 
-**Logging is thread-safe per call, not atomic.** The timestamp uses
-`localtime_r`, but two threads logging at once can still interleave their
-output, because each record is written with several `fprintf` calls.
-
 **The Windows paths are untested.** Every `_WIN32` branch is written but has
 only ever been compiled and run on Linux.
 
