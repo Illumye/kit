@@ -63,6 +63,154 @@ TEST(sv_prefix_and_suffix) {
     CHECK(sv_ends_with(sv, sv));
 }
 
+TEST(sv_search) {
+    String_View sv = SV("hello world, hello again");
+
+    CHECK_INT(sv_index_of(sv, 'w'), 6);
+    CHECK_INT(sv_index_of(sv, 'h'), 0);
+    CHECK_INT(sv_index_of(sv, 'z'), SV_NPOS);
+    CHECK_INT(sv_index_of(SV(""), 'a'), SV_NPOS);
+
+    CHECK_INT(sv_index_of_sv(sv, SV("world")), 6);
+    CHECK_INT(sv_index_of_sv(sv, SV("hello")), 0);      /* first match */
+    CHECK_INT(sv_index_of_sv(sv, SV("nowhere")), SV_NPOS);
+    CHECK_INT(sv_index_of_sv(sv, SV("")), 0);           /* empty needle */
+    CHECK_INT(sv_index_of_sv(SV("ab"), SV("abc")), SV_NPOS);  /* longer than sv */
+    CHECK_INT(sv_index_of_sv(sv, SV("again")), 19);     /* at the very end */
+
+    CHECK(sv_contains(sv, SV("world")));
+    CHECK(!sv_contains(sv, SV("World")));
+}
+
+TEST(sv_eq_ignorecase_is_ascii_only) {
+    CHECK(sv_eq_ignorecase(SV("Hello"), SV("hELLO")));
+    CHECK(sv_eq_ignorecase(SV(""), SV("")));
+    CHECK(!sv_eq_ignorecase(SV("hello"), SV("hell")));
+    CHECK(!sv_eq_ignorecase(SV("hello"), SV("hallo")));
+    CHECK(sv_eq_ignorecase(SV("MiXeD123"), SV("mixed123")));
+}
+
+TEST(sv_chop_by_sv_handles_multichar_delimiters) {
+    String_View text = SV("one::two::three");
+    CHECK_SV(sv_chop_by_sv(&text, SV("::")), "one");
+    CHECK_SV(sv_chop_by_sv(&text, SV("::")), "two");
+    CHECK_SV(sv_chop_by_sv(&text, SV("::")), "three");
+    CHECK_INT(text.count, 0);
+
+    /* Absent delimiter: everything comes back at once. */
+    String_View one = SV("no delimiter here");
+    CHECK_SV(sv_chop_by_sv(&one, SV("::")), "no delimiter here");
+    CHECK_INT(one.count, 0);
+
+    /* Adjacent delimiters produce empty fields, they are not collapsed. */
+    String_View empties = SV("a::::b");
+    CHECK_SV(sv_chop_by_sv(&empties, SV("::")), "a");
+    CHECK_SV(sv_chop_by_sv(&empties, SV("::")), "");
+    CHECK_SV(sv_chop_by_sv(&empties, SV("::")), "b");
+}
+
+TEST(sv_chop_right_clamps) {
+    String_View sv = SV("abcdef");
+    CHECK_SV(sv_chop_right(&sv, 2), "ef");
+    CHECK_SV(sv, "abcd");
+    CHECK_SV(sv_chop_right(&sv, 999), "abcd");
+    CHECK_INT(sv.count, 0);
+}
+
+/* The loop must terminate on every shape of input, and must not collapse the
+ * empty fields that sit between two delimiters. */
+TEST(sv_try_chop_by_delim_field_counts) {
+    struct { const char *input; int expected; } cases[] = {
+        { "a,b",    2 },
+        { "a,b,",   2 },   /* a trailing delimiter adds no field */
+        { "",       0 },   /* an empty view yields nothing */
+        { ",",      1 },
+        { "a,,b",   3 },   /* an empty field in the middle is kept */
+        { ",,",     2 },
+        { "solo",   1 },
+    };
+
+    for (size_t i = 0; i < UTILS_ARRAY_LEN(cases); i++) {
+        String_View line = SV(cases[i].input);
+        String_View field;
+        int n = 0;
+        while (sv_try_chop_by_delim(&line, ',', &field)) n++;
+        if (!CHECK_INT(n, cases[i].expected))
+            printf("      input was \"%s\"\n", cases[i].input);
+    }
+}
+
+TEST(sv_to_integers_is_strict) {
+    int64_t i = 0;
+    CHECK(sv_to_i64(SV("42"), &i));        CHECK_INT(i, 42);
+    CHECK(sv_to_i64(SV("-42"), &i));       CHECK_INT(i, -42);
+    CHECK(sv_to_i64(SV("+7"), &i));        CHECK_INT(i, 7);
+    CHECK(sv_to_i64(SV("0"), &i));         CHECK_INT(i, 0);
+    CHECK(sv_to_i64(SV("007"), &i));       CHECK_INT(i, 7);
+
+    CHECK(sv_to_i64(SV("9223372036854775807"), &i));
+    CHECK(i == INT64_MAX);
+    CHECK(sv_to_i64(SV("-9223372036854775808"), &i));   /* one past INT64_MAX */
+    CHECK(i == INT64_MIN);
+
+    /* Everything below must fail, and none of it may be half-parsed. */
+    CHECK(!sv_to_i64(SV(""), &i));
+    CHECK(!sv_to_i64(SV("-"), &i));
+    CHECK(!sv_to_i64(SV("12x"), &i));
+    CHECK(!sv_to_i64(SV(" 12"), &i));       /* no implicit trimming */
+    CHECK(!sv_to_i64(SV("12 "), &i));
+    CHECK(!sv_to_i64(SV("1.5"), &i));
+    CHECK(!sv_to_i64(SV("0x10"), &i));
+    CHECK(!sv_to_i64(SV("9223372036854775808"), &i));    /* overflow */
+    CHECK(!sv_to_i64(SV("-9223372036854775809"), &i));
+
+    uint64_t u = 0;
+    CHECK(sv_to_u64(SV("18446744073709551615"), &u));
+    CHECK(u == UINT64_MAX);
+    CHECK(!sv_to_u64(SV("18446744073709551616"), &u));   /* overflow */
+    CHECK(!sv_to_u64(SV("-1"), &u));                     /* not unsigned */
+
+    /* A failed parse must leave the destination alone. */
+    i = 999;
+    CHECK(!sv_to_i64(SV("bad"), &i));
+    CHECK_INT(i, 999);
+}
+
+TEST(sv_to_double_is_strict) {
+    double d = 0;
+    CHECK(sv_to_double(SV("1.5"), &d));     CHECK_DBL(d, 1.5, 1e-12);
+    CHECK(sv_to_double(SV("-0.25"), &d));   CHECK_DBL(d, -0.25, 1e-12);
+    CHECK(sv_to_double(SV("1e3"), &d));     CHECK_DBL(d, 1000.0, 1e-9);
+    CHECK(sv_to_double(SV("42"), &d));      CHECK_DBL(d, 42.0, 1e-12);
+
+    CHECK(!sv_to_double(SV(""), &d));
+    CHECK(!sv_to_double(SV("1.5x"), &d));
+    CHECK(!sv_to_double(SV("abc"), &d));
+    CHECK(!sv_to_double(SV("1e999"), &d));   /* overflows to infinity */
+
+    /* Longer than the internal buffer: refused, never truncated. */
+    char long_number[128];
+    memset(long_number, '1', sizeof(long_number));
+    CHECK(!sv_to_double(sv_from_parts(long_number, sizeof(long_number)), &d));
+}
+
+TEST(sv_to_cstr_and_from_parts) {
+    /* A view into a larger buffer, with no terminator of its own. */
+    const char *backing = "prefix-PAYLOAD-suffix";
+    String_View sv = sv_from_parts(backing + 7, 7);
+    CHECK_SV(sv, "PAYLOAD");
+
+    char *owned = sv_to_cstr(sv);
+    if (CHECK(owned != NULL)) {
+        CHECK_STR(owned, "PAYLOAD");
+        CHECK_INT(strlen(owned), 7);
+        free(owned);
+    }
+
+    char *empty = sv_to_cstr(sv_from_parts(NULL, 0));
+    if (CHECK(empty != NULL)) { CHECK_STR(empty, ""); free(empty); }
+}
+
 /* --- string builder ------------------------------------------------------- */
 
 TEST(sb_appends) {
@@ -210,6 +358,14 @@ int main(void) {
     RUN(sv_chop_by_delim);
     RUN(sv_chop_left_clamps);
     RUN(sv_prefix_and_suffix);
+    RUN(sv_search);
+    RUN(sv_eq_ignorecase_is_ascii_only);
+    RUN(sv_chop_by_sv_handles_multichar_delimiters);
+    RUN(sv_chop_right_clamps);
+    RUN(sv_try_chop_by_delim_field_counts);
+    RUN(sv_to_integers_is_strict);
+    RUN(sv_to_double_is_strict);
+    RUN(sv_to_cstr_and_from_parts);
     RUN(sb_appends);
     RUN(sb_grows_past_the_initial_capacity);
     RUN(hash_is_stable_and_discriminating);

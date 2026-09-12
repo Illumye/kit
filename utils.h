@@ -364,7 +364,11 @@ typedef struct {
 #define SV_Arg(sv)       (int)(sv).count, (sv).data
 #define SV_LIT(literal)  ((String_View){ (literal), sizeof(literal) - 1 })
 
+/* Returned by the search functions when there is no match. */
+#define SV_NPOS ((size_t)-1)
+
 String_View sv_from_cstr(const char *cstr);
+String_View sv_from_parts(const char *data, size_t count);
 
 /* Whitespace trimming. */
 String_View sv_trim_left(String_View sv);
@@ -385,6 +389,47 @@ bool sv_starts_with(String_View sv, String_View prefix);
 bool sv_ends_with(String_View sv, String_View suffix);
 bool sv_starts_with_cstr(String_View sv, const char *prefix);
 bool sv_ends_with_cstr(String_View sv, const char *suffix);
+
+/* ASCII only: the library does no locale or Unicode case folding. */
+bool sv_eq_ignorecase(String_View a, String_View b);
+
+/* Search. Both return SV_NPOS when there is no match; an empty needle matches
+ * at 0, which is what makes "starts with nothing" true. */
+size_t sv_index_of(String_View sv, char c);
+size_t sv_index_of_sv(String_View sv, String_View needle);
+bool   sv_contains(String_View sv, String_View needle);
+
+/* Consume up to a multi-character delimiter, the counterpart of
+ * sv_chop_by_delim. When the delimiter is absent the whole view is returned
+ * and *sv is left empty. */
+String_View sv_chop_by_sv(String_View *sv, String_View delim);
+
+/* Consume n characters from the right. */
+String_View sv_chop_right(String_View *sv, size_t n);
+
+/* Loop form of sv_chop_by_delim: writes the next field into *out and returns
+ * false once the view is exhausted.
+ *
+ *   String_View field;
+ *   while (sv_try_chop_by_delim(&line, ',', &field)) { ... }
+ *
+ * An empty view yields nothing, and a trailing delimiter does not produce an
+ * extra empty field: both "a,b" and "a,b," yield "a" then "b". Telling those
+ * two apart would mean hiding a state bit inside the String_View, which is a
+ * worse trade than the simpler contract. A caller that needs the distinction
+ * can test the input with sv_ends_with_cstr first. Delimiters in the middle
+ * are never collapsed, so "a,,b" does yield an empty middle field. */
+bool sv_try_chop_by_delim(String_View *sv, char delim, String_View *out);
+
+/* Strict numeric parsing: the entire view must be consumed, leading and
+ * trailing spaces included, or the call fails and *out is untouched.
+ * Overflow is a failure, not a saturation. */
+bool sv_to_i64(String_View sv, int64_t *out);
+bool sv_to_u64(String_View sv, uint64_t *out);
+bool sv_to_double(String_View sv, double *out);
+
+/* A malloc'd, NUL-terminated copy. The caller owns it. */
+char *sv_to_cstr(String_View sv);
 
 /* --------------------------------------------------------------------------
  * SECTION 5 : ARENA ALLOCATOR
@@ -1065,6 +1110,131 @@ long file_size(const char *path) {
 #endif
 }
 
+bool sv_eq_ignorecase(String_View a, String_View b) {
+    if (a.count != b.count) return false;
+    for (size_t i = 0; i < a.count; ++i) {
+        int ca = tolower((unsigned char)a.data[i]);
+        int cb = tolower((unsigned char)b.data[i]);
+        if (ca != cb) return false;
+    }
+    return true;
+}
+
+size_t sv_index_of(String_View sv, char c) {
+    for (size_t i = 0; i < sv.count; ++i)
+        if (sv.data[i] == c) return i;
+    return SV_NPOS;
+}
+
+size_t sv_index_of_sv(String_View sv, String_View needle) {
+    if (needle.count == 0)      return 0;
+    if (needle.count > sv.count) return SV_NPOS;
+
+    for (size_t i = 0; i + needle.count <= sv.count; ++i)
+        if (memcmp(sv.data + i, needle.data, needle.count) == 0) return i;
+    return SV_NPOS;
+}
+
+bool sv_contains(String_View sv, String_View needle) {
+    return sv_index_of_sv(sv, needle) != SV_NPOS;
+}
+
+String_View sv_chop_by_sv(String_View *sv, String_View delim) {
+    size_t at = sv_index_of_sv(*sv, delim);
+    if (at == SV_NPOS) {
+        String_View all = *sv;
+        sv->data  += sv->count;
+        sv->count  = 0;
+        return all;
+    }
+
+    String_View head = { .data = sv->data, .count = at };
+    sv->data  += at + delim.count;
+    sv->count -= at + delim.count;
+    return head;
+}
+
+String_View sv_chop_right(String_View *sv, size_t n) {
+    if (n > sv->count) n = sv->count;
+    String_View tail = { .data = sv->data + sv->count - n, .count = n };
+    sv->count -= n;
+    return tail;
+}
+
+bool sv_try_chop_by_delim(String_View *sv, char delim, String_View *out) {
+    if (sv->count == 0) return false;
+    *out = sv_chop_by_delim(sv, delim);
+    return true;
+}
+
+/* Shared by the integer parsers: consumes digits and reports overflow against
+ * the caller's ceiling, so the signed and unsigned limits are both honoured
+ * without ever computing an out-of-range value. */
+static bool sv__parse_digits(String_View sv, uint64_t limit, uint64_t *out) {
+    if (sv.count == 0) return false;
+
+    uint64_t acc = 0;
+    for (size_t i = 0; i < sv.count; ++i) {
+        unsigned char c = (unsigned char)sv.data[i];
+        if (c < '0' || c > '9') return false;
+
+        uint64_t digit = (uint64_t)(c - '0');
+        if (acc > (limit - digit) / 10) return false;   /* would overflow */
+        acc = acc * 10 + digit;
+    }
+    *out = acc;
+    return true;
+}
+
+bool sv_to_u64(String_View sv, uint64_t *out) {
+    if (sv.count > 0 && sv.data[0] == '+') { sv.data += 1; sv.count -= 1; }
+    uint64_t value;
+    if (!sv__parse_digits(sv, UINT64_MAX, &value)) return false;
+    *out = value;
+    return true;
+}
+
+bool sv_to_i64(String_View sv, int64_t *out) {
+    bool negative = false;
+    if (sv.count > 0 && (sv.data[0] == '-' || sv.data[0] == '+')) {
+        negative = (sv.data[0] == '-');
+        sv.data  += 1;
+        sv.count -= 1;
+    }
+
+    /* The magnitude of INT64_MIN is one past INT64_MAX, hence the two limits. */
+    uint64_t limit = negative ? (uint64_t)INT64_MAX + 1 : (uint64_t)INT64_MAX;
+    uint64_t value;
+    if (!sv__parse_digits(sv, limit, &value)) return false;
+
+    *out = negative ? (int64_t)(~value + 1) : (int64_t)value;
+    return true;
+}
+
+bool sv_to_double(String_View sv, double *out) {
+    /* strtod needs a terminator, and a real number never needs many digits. */
+    char buf[64];
+    if (sv.count == 0 || sv.count >= sizeof(buf)) return false;
+    memcpy(buf, sv.data, sv.count);
+    buf[sv.count] = '\0';
+
+    char *end;
+    errno = 0;
+    double value = strtod(buf, &end);
+    if (end != buf + sv.count || errno == ERANGE) return false;
+
+    *out = value;
+    return true;
+}
+
+char *sv_to_cstr(String_View sv) {
+    char *copy = malloc(sv.count + 1);
+    if (!copy) PANIC("sv_to_cstr: malloc of %zu bytes failed", sv.count + 1);
+    if (sv.count > 0) memcpy(copy, sv.data, sv.count);
+    copy[sv.count] = '\0';
+    return copy;
+}
+
 /* --------------------------------------------------------------------------
  * Filesystem
  * -------------------------------------------------------------------------- */
@@ -1370,6 +1540,10 @@ bool read_dir(const char *path, FileList *out) {
 
 String_View sv_from_cstr(const char *cstr) {
     return (String_View){ .data = cstr, .count = strlen(cstr) };
+}
+
+String_View sv_from_parts(const char *data, size_t count) {
+    return (String_View){ .data = data, .count = count };
 }
 
 String_View sv_trim_left(String_View sv) {
