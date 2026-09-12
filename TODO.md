@@ -46,5 +46,8 @@ cannot be written without them.
 stdout and `cmd_capture_merged` takes both interleaved. Two buffers would need
 concurrent reads on two pipes, or the child blocks once one of them fills.
 
-**The Windows paths are untested.** Every `_WIN32` branch is written but has
-only ever been compiled and run on Linux.
+**Windows is exercised through wine, not on Windows.** `make check-windows`
+cross-compiles the suite with mingw-w64 and runs it under wine, so every
+`_WIN32` branch is compiled and executed. That is not the same as a real
+Windows box: wine reimplements the API, the toolchain is mingw rather than
+MSVC, and only the msvcrt runtime is covered, not UCRT.

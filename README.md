@@ -70,9 +70,10 @@ make test-asan       # AddressSanitizer and UndefinedBehaviorSanitizer, leaks on
 make check-c11       # strict -std=c11 -Werror, with and without vector maths
 make check-examples  # build and drive the example programs
 make test-all        # all of the above
+make check-windows   # cross-compile with mingw-w64 and run under wine
 ```
 
-The suite is 76 tests over five files, and the header compiles warning-free
+The suite is 77 tests over five files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 
@@ -111,12 +112,12 @@ a strict `-std=c11` rather than `-std=gnu11`.
 ## Status
 
 Known limitations and queued work are recorded in [TODO.md](TODO.md). The
-short version: the Windows branches are written but have only ever run on
-Linux, and the header does not compile as C++.
+short version: Windows is covered by cross-compiling and running under wine
+rather than on a real Windows machine, and the header does not compile as C++.
 
 ## Requirements
 
-C11. Tested with gcc and clang on Linux.
+C11. Tested with gcc and clang on Linux, and with mingw-w64 under wine.
 
 ## License
 
