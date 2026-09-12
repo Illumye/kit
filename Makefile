@@ -20,6 +20,9 @@ SAN = -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover
 
 # Windows cross build. The _WIN32 branches are otherwise never compiled at all.
 # Needs gcc-mingw-w64-x86-64, and wine to run the result.
+CXX      ?= g++
+CXXFLAGS ?= -std=c++17 -O2 -g -Wall -Wextra
+
 FUZZ_SRC  := $(wildcard tests/fuzz/fuzz_*.c)
 FUZZ_BIN  := $(patsubst tests/fuzz/%.c,tests/fuzz/run_%,$(FUZZ_SRC))
 FUZZ_CC   ?= clang
@@ -29,8 +32,8 @@ MINGW    ?= x86_64-w64-mingw32-gcc
 WINE     ?= wine
 WIN_BIN  := $(patsubst tests/%.c,tests/win_%.exe,$(TEST_SRC))
 
-.PHONY: all test test-asan test-all examples check-c11 check-examples \
-        check-windows fuzz fuzz-build clean
+.PHONY: all test test-asan test-all examples check-c11 check-cxx \
+        check-examples check-windows fuzz fuzz-build clean
 
 all: test
 
@@ -64,7 +67,18 @@ check-c11:
 	@rm -f .compile-check.c
 	@echo "strict C11 compile: ok"
 
-test-all: check-c11 test test-asan check-examples
+test-all: check-c11 check-cxx test test-asan check-examples
+
+# --- C++ ---------------------------------------------------------------------
+# The header has to be usable from C++ with the implementation included, not
+# only its declarations. This is what keeps the extern "C" guard, the
+# language-neutral struct literals and the explicit allocation casts honest.
+
+tests/run_test_cxx: tests/test_cxx.cpp utils.h tests/utest.h
+	$(CXX) $(CXXFLAGS) $< -o $@ $(LDLIBS)
+
+check-cxx: tests/run_test_cxx
+	@./tests/run_test_cxx
 
 # --- fuzzing -------------------------------------------------------------------
 # libFuzzer, so clang whatever CC is. Each target asserts its own invariants
@@ -121,6 +135,7 @@ check-examples: examples/build examples/cli
 	@echo "examples: ok"
 
 clean:
-	rm -f $(TEST_BIN) $(TEST_ASAN) $(WIN_BIN) $(FUZZ_BIN) examples/cli examples/build .compile-check.c
+	rm -f $(TEST_BIN) $(TEST_ASAN) $(WIN_BIN) $(FUZZ_BIN) tests/run_test_cxx \
+	      examples/cli examples/build .compile-check.c .cxx-check.cpp
 	rm -rf build
 	rm -rf utest-tmp-*

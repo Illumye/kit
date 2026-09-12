@@ -31,9 +31,9 @@ the error through every macro would poison the ergonomics.
 
 ## Known limitations
 
-**No `extern "C"` guard.** The header cannot be included from C++. Adding the
-guard is easy; making the body compile as C++ is not, because it relies on
-implicit `void *` conversions throughout.
+**C++ needs a flexible array member.** The header compiles as C++17, but the
+arena regions carry their payload in one, which ISO C++ forbids and every real
+compiler accepts. `-pedantic` says so; nothing else does.
 
 **`sv_try_chop_by_delim` folds the trailing empty field.** `"a,b"` and `"a,b,"`
 both yield two fields. Distinguishing them needs a state bit hidden inside the

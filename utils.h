@@ -70,6 +70,10 @@
 #include <stdio.h>
 #include <time.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifdef _WIN32
 #    define WIN32_LEAN_AND_MEAN
 #    include <windows.h>
@@ -123,6 +127,35 @@
 #    define UTILS_THREAD_LOCAL __declspec(thread)
 #else
 #    define UTILS_THREAD_LOCAL
+#endif
+
+/* C converts void * to any object pointer on its own; C++ does not, and the
+ * dynamic array macros assign the result of realloc to a typed member. */
+#if defined(__cplusplus)
+#    define UTILS_CAST_LIKE(lvalue, ptr) (decltype(lvalue))(ptr)
+#elif defined(__GNUC__) || defined(__clang__)
+#    define UTILS_CAST_LIKE(lvalue, ptr) (__typeof__(lvalue))(ptr)
+#else
+#    define UTILS_CAST_LIKE(lvalue, ptr) (ptr)
+#endif
+
+/* A zeroed aggregate. C spells it {0} and C++ warns about the fields that
+ * leaves out; C++ spells it {} and C rejects that before C23. Library types
+ * are all designed to start zeroed, so this is the portable way to say so:
+ *
+ *   Cmd cmd = UTILS_ZEROED;
+ */
+#ifdef __cplusplus
+#    define UTILS_ZEROED {}
+#else
+#    define UTILS_ZEROED {0}
+#endif
+
+/* Struct literals: a C compound literal, brace initialisation in C++. */
+#ifdef __cplusplus
+#    define UTILS_LITERAL(T) T
+#else
+#    define UTILS_LITERAL(T) (T)
 #endif
 
 #define UTILS_UNUSED(v)      (void)(v)
@@ -303,9 +336,13 @@ int needs_rebuild(const char *output, const char *const *inputs, size_t n_inputs
  * one without a cast that -Wcast-qual then objects to. */
 int needs_rebuild_list(const char *output, const FileList *inputs);
 
-/* Same, for a single input. */
-#define needs_rebuild1(output, input) \
-    needs_rebuild((output), (const char *[]){ (input) }, 1)
+/* Same, for a single input. A function rather than a macro: the array had to
+ * be a compound literal, and C++ has no equivalent. */
+static inline int needs_rebuild1(const char *output, const char *input) {
+    const char *one[1];
+    one[0] = input;
+    return needs_rebuild(output, one, 1);
+}
 
 /* --------------------------------------------------------------------------
  * SECTION 3 : DYNAMIC ARRAYS
@@ -339,7 +376,7 @@ int needs_rebuild_list(const char *output, const FileList *inputs);
             void *_mem = realloc((da)->items, _cap * sizeof(*(da)->items));         \
             if (!_mem) PANIC("da_reserve: realloc of %zu bytes failed",             \
                              _cap * sizeof(*(da)->items));                          \
-            (da)->items    = _mem;                                                  \
+            (da)->items    = UTILS_CAST_LIKE((da)->items, _mem);                                                  \
             (da)->capacity = _cap;                                                  \
         }                                                                           \
     } while (0)
@@ -448,7 +485,7 @@ typedef struct {
 #define SV(cstr)         sv_from_cstr(cstr)
 #define SV_Fmt           "%.*s"
 #define SV_Arg(sv)       (int)(sv).count, (sv).data
-#define SV_LIT(literal)  ((String_View){ (literal), sizeof(literal) - 1 })
+#define SV_LIT(literal)  (UTILS_LITERAL(String_View){ (literal), sizeof(literal) - 1 })
 
 /* Returned by the search functions when there is no match. */
 #define SV_NPOS ((size_t)-1)
@@ -658,8 +695,8 @@ double    sw_elapsed_ms(Stopwatch sw);
 typedef struct { float x, y; }    Vec2;
 typedef struct { float x, y, z; } Vec3;
 
-#define V2(x, y)    ((Vec2){(float)(x), (float)(y)})
-#define V3(x, y, z) ((Vec3){(float)(x), (float)(y), (float)(z)})
+#define V2(x, y)    (UTILS_LITERAL(Vec2){(float)(x), (float)(y)})
+#define V3(x, y, z) (UTILS_LITERAL(Vec3){(float)(x), (float)(y), (float)(z)})
 
 #define V2_Fmt      "(%.2f, %.2f)"
 #define V2_Arg(v)   (v).x, (v).y
@@ -979,6 +1016,10 @@ static inline float map_range(float x,
 #define DEG2RAD(d) ((d) * (float)(3.14159265358979323846 / 180.0))
 #define RAD2DEG(r) ((r) * (float)(180.0 / 3.14159265358979323846))
 
+#ifdef __cplusplus
+}   /* extern "C" */
+#endif
+
 #endif /* UTILS_H */
 
 /* ============================================================================
@@ -1199,7 +1240,7 @@ char *read_file_ex(const char *path, size_t *out_size) {
     }
     if (cap == 0) cap = UTILS_READ_CHUNK;
 
-    buffer = malloc(cap + 1);
+    buffer = (char *)malloc(cap + 1);
     if (!buffer) {
         LOG(LOG_ERROR, "read_file: out of memory reading '%s'", path);
         return_defer(false);
@@ -1212,7 +1253,7 @@ char *read_file_ex(const char *path, size_t *out_size) {
                 return_defer(false);
             }
             cap *= 2;
-            char *grown = realloc(buffer, cap + 1);
+            char *grown = (char *)realloc(buffer, cap + 1);
             if (!grown) {
                 LOG(LOG_ERROR, "read_file: out of memory reading '%s'", path);
                 return_defer(false);
@@ -1326,7 +1367,7 @@ String_View sv_chop_by_sv(String_View *sv, String_View delim) {
         return all;
     }
 
-    String_View head = { .data = sv->data, .count = at };
+    String_View head = { sv->data, at };
     sv->data  += at + delim.count;
     sv->count -= at + delim.count;
     return head;
@@ -1334,7 +1375,7 @@ String_View sv_chop_by_sv(String_View *sv, String_View delim) {
 
 String_View sv_chop_right(String_View *sv, size_t n) {
     if (n > sv->count) n = sv->count;
-    String_View tail = { .data = sv->data + sv->count - n, .count = n };
+    String_View tail = { sv->data + sv->count - n, n };
     sv->count -= n;
     return tail;
 }
@@ -1406,7 +1447,7 @@ bool sv_to_double(String_View sv, double *out) {
 }
 
 char *sv_to_cstr(String_View sv) {
-    char *copy = malloc(sv.count + 1);
+    char *copy = (char *)malloc(sv.count + 1);
     if (!copy) PANIC("sv_to_cstr: malloc of %zu bytes failed", sv.count + 1);
     if (sv.count > 0) memcpy(copy, sv.data, sv.count);
     copy[sv.count] = '\0';
@@ -1466,7 +1507,7 @@ bool mkdir_p(const char *path) {
     }
 
     bool          result = true;
-    StringBuilder sb     = {0};
+    StringBuilder sb     = UTILS_ZEROED;
     const char   *p      = path;
 
     /* Carry the leading separators over verbatim so that an absolute path
@@ -1670,7 +1711,7 @@ static int utils__cmp_cstr(const void *a, const void *b) {
 
 static char *utils__strdup(const char *s) {
     size_t n    = strlen(s) + 1;
-    char  *copy = malloc(n);
+    char  *copy = (char *)malloc(n);
     if (!copy) PANIC("read_dir: out of memory");
     memcpy(copy, s, n);
     return copy;
@@ -1679,7 +1720,7 @@ static char *utils__strdup(const char *s) {
 bool read_dir(const char *path, FileList *out) {
     /* Entries land in a scratch list first, so a failure halfway through
      * leaves the caller's list exactly as it was. */
-    FileList found = {0};
+    FileList found = UTILS_ZEROED;
     bool     result = true;
 
 #ifdef _WIN32
@@ -1741,23 +1782,27 @@ bool read_dir(const char *path, FileList *out) {
  * -------------------------------------------------------------------------- */
 
 String_View sv_from_cstr(const char *cstr) {
-    return (String_View){ .data = cstr, .count = strlen(cstr) };
+    String_View sv = { cstr, strlen(cstr) };
+    return sv;
 }
 
 String_View sv_from_parts(const char *data, size_t count) {
-    return (String_View){ .data = data, .count = count };
+    String_View sv = { data, count };
+    return sv;
 }
 
 String_View sv_trim_left(String_View sv) {
     size_t i = 0;
     while (i < sv.count && isspace((unsigned char)sv.data[i])) i++;
-    return (String_View){ .data = sv.data + i, .count = sv.count - i };
+    String_View out = { sv.data + i, sv.count - i };
+    return out;
 }
 
 String_View sv_trim_right(String_View sv) {
     size_t i = 0;
     while (i < sv.count && isspace((unsigned char)sv.data[sv.count - 1 - i])) i++;
-    return (String_View){ .data = sv.data, .count = sv.count - i };
+    String_View out = { sv.data, sv.count - i };
+    return out;
 }
 
 String_View sv_trim(String_View sv) {
@@ -1767,7 +1812,7 @@ String_View sv_trim(String_View sv) {
 String_View sv_chop_by_delim(String_View *sv, char delim) {
     size_t i = 0;
     while (i < sv->count && sv->data[i] != delim) i++;
-    String_View result = { .data = sv->data, .count = i };
+    String_View result = { sv->data, i };
     if (i < sv->count) {
         sv->data  += i + 1;
         sv->count -= i + 1;
@@ -1780,7 +1825,7 @@ String_View sv_chop_by_delim(String_View *sv, char delim) {
 
 String_View sv_chop_left(String_View *sv, size_t n) {
     if (n > sv->count) n = sv->count;
-    String_View result = { .data = sv->data, .count = n };
+    String_View result = { sv->data, n };
     sv->data  += n;
     sv->count -= n;
     return result;
@@ -1824,7 +1869,7 @@ static Arena_Region *arena__new_region(size_t capacity) {
     if (capacity > SIZE_MAX - sizeof(Arena_Region))
         PANIC("arena: region of %zu bytes is too large", capacity);
 
-    Arena_Region *r = malloc(sizeof(Arena_Region) + capacity);
+    Arena_Region *r = (Arena_Region *)malloc(sizeof(Arena_Region) + capacity);
     if (!r) PANIC("arena: malloc of %zu bytes failed", capacity);
 
     r->next     = NULL;
@@ -1844,7 +1889,7 @@ static void arena__append_region(Arena *a, size_t min_capacity) {
 }
 
 Arena arena_make(size_t size) {
-    Arena a = { .first = NULL, .current = NULL, .region_size = size };
+    Arena a = { NULL, NULL, size };   /* first, current, region_size */
     if (size > 0) arena__append_region(&a, size);
     return a;
 }
@@ -1887,7 +1932,7 @@ void *arena_alloc(Arena *a, size_t size) {
 }
 
 char *arena_strdup_n(Arena *a, const char *s, size_t n) {
-    char *copy = arena_alloc_aligned(a, n + 1, 1);
+    char *copy = (char *)arena_alloc_aligned(a, n + 1, 1);
     if (n > 0) memcpy(copy, s, n);
     copy[n] = '\0';
     return copy;
@@ -1904,7 +1949,7 @@ char *arena_sprintf(Arena *a, const char *fmt, ...) {
     va_end(args);
     if (n < 0) PANIC("arena_sprintf: encoding error");
 
-    char *out = arena_alloc_aligned(a, (size_t)n + 1, 1);
+    char *out = (char *)arena_alloc_aligned(a, (size_t)n + 1, 1);
     va_start(args, fmt);
     vsnprintf(out, (size_t)n + 1, fmt, args);
     va_end(args);
@@ -1944,7 +1989,7 @@ void arena_free(Arena *a) {
 }
 
 Arena_Mark arena_mark(const Arena *a) {
-    Arena_Mark m = { .region = a->current, .used = a->current ? a->current->used : 0 };
+    Arena_Mark m = { a->current, a->current ? a->current->used : 0 };
     return m;
 }
 
@@ -1963,7 +2008,7 @@ void arena_rewind(Arena *a, Arena_Mark mark) {
  * -------------------------------------------------------------------------- */
 
 /* One arena per thread: see the header for who is expected to free it. */
-static UTILS_THREAD_LOCAL Arena UTILS__TEMP = {0};
+static UTILS_THREAD_LOCAL Arena UTILS__TEMP = UTILS_ZEROED;
 
 void *temp_alloc(size_t size) {
     return arena_alloc(&UTILS__TEMP, size);
@@ -1980,7 +2025,7 @@ char *temp_sprintf(const char *fmt, ...) {
     va_end(args);
     if (n < 0) PANIC("temp_sprintf: encoding error");
 
-    char *out = arena_alloc_aligned(&UTILS__TEMP, (size_t)n + 1, 1);
+    char *out = (char *)arena_alloc_aligned(&UTILS__TEMP, (size_t)n + 1, 1);
     va_start(args, fmt);
     vsnprintf(out, (size_t)n + 1, fmt, args);
     va_end(args);
@@ -2214,7 +2259,7 @@ bool opts_parse(Opt *opts, size_t n_opts, int *argc, char ***argv) {
 void opts_usage(FILE *fp, const char *program, const Opt *opts, size_t n_opts) {
     fprintf(fp, "Usage: %s [options] ...\n\nOptions:\n", program);
 
-    StringBuilder left = {0};
+    StringBuilder left = UTILS_ZEROED;
     for (size_t i = 0; i < n_opts; i++) {
         const Opt *o = &opts[i];
         sb_reset(&left);
@@ -2285,7 +2330,7 @@ char *sb_cstr(StringBuilder *sb) {
 }
 
 char *sb_to_string(StringBuilder *sb) {
-    char *copy = malloc(sb->count + 1);
+    char *copy = (char *)malloc(sb->count + 1);
     if (!copy) PANIC("sb_to_string: malloc failed");
     memcpy(copy, sb->items, sb->count);
     copy[sb->count] = '\0';
@@ -2339,7 +2384,7 @@ static void utils__cmd_log(Cmd *c) {
 #ifdef _WIN32
 
 static char *utils__cmd_to_cmdline(Cmd *c) {
-    StringBuilder sb = {0};
+    StringBuilder sb = UTILS_ZEROED;
     for (size_t i = 0; i < c->count; ++i) {
         bool has_space = (strchr(c->items[i], ' ') != NULL);
         if (has_space) sb_append(&sb, "\"");
@@ -2636,7 +2681,7 @@ bool cmd_run(Cmd *c) {
 }
 
 bool cmd_run_args(const char *first, ...) {
-    Cmd cmd = {0};
+    Cmd cmd = UTILS_ZEROED;
     cmd_append(&cmd, first);
 
     va_list args;
@@ -2731,11 +2776,10 @@ static void hm__rehash(HashMap *hm) {
         new_cap = (hm->count * 10 >= hm->capacity * 7) ? hm->capacity * 2
                                                        : hm->capacity;
 
-    HM_Entry *new_entries = calloc(new_cap, sizeof(HM_Entry));
+    HM_Entry *new_entries = (HM_Entry *)calloc(new_cap, sizeof(HM_Entry));
     if (!new_entries) PANIC("hm__rehash: calloc of %zu entries failed", new_cap);
 
-    HashMap tmp = { .entries = new_entries, .count = 0, .used = 0,
-                    .capacity = new_cap };
+    HashMap tmp = { new_entries, 0, 0, new_cap };   /* entries, count, used, capacity */
 
     for (size_t i = 0; i < hm->capacity; ++i) {
         if (!hm_entry_live(&hm->entries[i])) continue;

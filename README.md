@@ -68,6 +68,7 @@ int main(int argc, char **argv) {
 make test            # native build
 make test-asan       # AddressSanitizer and UndefinedBehaviorSanitizer, leaks on
 make check-c11       # strict -std=c11 -Werror, with and without vector maths
+make check-cxx       # the same header from C++17, implementation included
 make check-examples  # build and drive the example programs
 make test-all        # all of the above
 make check-windows   # cross-compile with mingw-w64 and run under wine
@@ -139,11 +140,26 @@ a strict `-std=c11` rather than `-std=gnu11`.
 
 Known limitations and queued work are recorded in [TODO.md](TODO.md). The
 short version: Windows is covered by cross-compiling and running under wine
-rather than on a real Windows machine, and the header does not compile as C++.
+rather than on a real Windows machine.
 
 ## Requirements
 
-C11. Tested with gcc and clang on Linux, and with mingw-w64 under wine.
+C11, or C++17. Tested with gcc and clang on Linux, g++ and clang++ for the
+C++ path, and mingw-w64 under wine for Windows.
+
+## Using it from C++
+
+The header compiles as C++17 with the implementation included, so a C++ project
+needs no separate C translation unit. Two spellings differ between the
+languages and the header provides one that works in both:
+
+```cpp
+Cmd cmd = UTILS_ZEROED;   // {0} in C warns in C++, {} in C++ is not C
+Vec2 v  = V2(3, 4);       // a compound literal in C, brace init in C++
+```
+
+The one thing ISO C++ does not allow is the flexible array member the arena
+uses for its regions. Every compiler accepts it; only `-pedantic` complains.
 
 ## License
 
