@@ -146,6 +146,62 @@ TEST(arena_string_helpers) {
     arena_free(&a);
 }
 
+/* --- temporary allocator -------------------------------------------------- */
+
+TEST(temp_allocator_basics) {
+    temp_reset();
+
+    char *a = temp_sprintf("%s/%s.o", "build", "main");
+    char *b = temp_strdup("literal");
+    int  *n = temp_alloc(sizeof(int) * 4);
+
+    CHECK_STR(a, "build/main.o");
+    CHECK_STR(b, "literal");
+    if (CHECK(n != NULL)) for (int i = 0; i < 4; i++) CHECK_INT(n[i], 0);
+
+    /* Distinct calls must not overlap. */
+    CHECK(a != b);
+    CHECK_STR(a, "build/main.o");
+    temp_reset();
+}
+
+TEST(temp_reset_reclaims_everything) {
+    temp_reset();
+    for (int i = 0; i < 10000; i++) temp_sprintf("path/to/file-%d.c", i);
+
+    Arena_Mark before = temp_mark();
+    CHECK(before.region != NULL);
+
+    temp_reset();
+    char *after = temp_strdup("x");
+    CHECK(after != NULL);
+    CHECK_STR(after, "x");
+    temp_reset();
+}
+
+TEST(temp_mark_and_rewind_nest) {
+    temp_reset();
+    char *outer = temp_strdup("outer");
+
+    Arena_Mark m1 = temp_mark();
+    char *inner = temp_sprintf("inner %d", 1);
+    CHECK_STR(inner, "inner 1");
+
+    Arena_Mark m2 = temp_mark();
+    for (int i = 0; i < 1000; i++) temp_sprintf("deep %d", i);
+    temp_rewind(m2);
+    CHECK_STR(inner, "inner 1");                /* the inner scope survives */
+    CHECK_STR(outer, "outer");
+
+    temp_rewind(m1);
+    CHECK_STR(outer, "outer");                  /* and so does the outer one */
+
+    temp_reset();
+    temp_free();                                /* releasing must be safe */
+    CHECK_STR(temp_strdup("after free"), "after free");
+    temp_reset();
+}
+
 /* --- hash map ------------------------------------------------------------- */
 
 TEST(hm_set_get_delete) {
@@ -275,6 +331,9 @@ int main(void) {
     RUN(arena_reset_reuses_the_regions);
     RUN(arena_mark_and_rewind);
     RUN(arena_string_helpers);
+    RUN(temp_allocator_basics);
+    RUN(temp_reset_reclaims_everything);
+    RUN(temp_mark_and_rewind_nest);
     RUN(hm_set_get_delete);
     RUN(hm_on_an_empty_map_is_safe);
     RUN(hm_stores_null_values);

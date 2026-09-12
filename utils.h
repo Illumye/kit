@@ -460,6 +460,40 @@ Arena_Mark arena_mark(const Arena *a);
 void       arena_rewind(Arena *a, Arena_Mark mark);
 
 /* --------------------------------------------------------------------------
+ * SECTION 5b : TEMPORARY ALLOCATOR
+ *
+ * A process-wide scratch arena for strings that live until the end of the
+ * current step: a path being assembled, a formatted message, a command line.
+ * Nothing here is ever freed individually.
+ *
+ *   const char *out = temp_sprintf("%s/%s.o", build_dir, name);
+ *   cmd_append(&cmd, out);
+ *   ...
+ *   temp_reset();   // once the step is over
+ *
+ * Reclaim with temp_reset between iterations, or with a mark for nesting:
+ *
+ *   Arena_Mark m = temp_mark();
+ *   ... temp_sprintf ...
+ *   temp_rewind(m);
+ *
+ * The arena is global, so none of this is thread-safe. A thread that needs
+ * scratch space should carry its own Arena.
+ * -------------------------------------------------------------------------- */
+
+void  *temp_alloc(size_t size);
+char  *temp_strdup(const char *s);
+char  *temp_sprintf(const char *fmt, ...) UTILS_PRINTF_FORMAT(1, 2);
+
+Arena_Mark temp_mark(void);
+void       temp_rewind(Arena_Mark mark);
+void       temp_reset(void);
+
+/* Releases the scratch memory to the allocator. Rarely needed: a program that
+ * calls temp_reset already reuses the same regions forever. */
+void       temp_free(void);
+
+/* --------------------------------------------------------------------------
  * SECTION 6 : TIME / STOPWATCH
  * -------------------------------------------------------------------------- */
 
@@ -1545,6 +1579,39 @@ void arena_rewind(Arena *a, Arena_Mark mark) {
     for (Arena_Region *r = mark.region->next; r; r = r->next) r->used = 0;
     a->current = mark.region;
 }
+
+/* --------------------------------------------------------------------------
+ * Temporary allocator
+ * -------------------------------------------------------------------------- */
+
+static Arena UTILS__TEMP = {0};
+
+void *temp_alloc(size_t size) {
+    return arena_alloc(&UTILS__TEMP, size);
+}
+
+char *temp_strdup(const char *s) {
+    return arena_strdup(&UTILS__TEMP, s);
+}
+
+char *temp_sprintf(const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(NULL, 0, fmt, args);
+    va_end(args);
+    if (n < 0) PANIC("temp_sprintf: encoding error");
+
+    char *out = arena_alloc_aligned(&UTILS__TEMP, (size_t)n + 1, 1);
+    va_start(args, fmt);
+    vsnprintf(out, (size_t)n + 1, fmt, args);
+    va_end(args);
+    return out;
+}
+
+Arena_Mark temp_mark(void)             { return arena_mark(&UTILS__TEMP); }
+void       temp_rewind(Arena_Mark m)   { arena_rewind(&UTILS__TEMP, m); }
+void       temp_reset(void)            { arena_reset(&UTILS__TEMP); }
+void       temp_free(void)             { arena_free(&UTILS__TEMP); }
 
 /* --------------------------------------------------------------------------
  * Stopwatch
