@@ -20,12 +20,17 @@ SAN = -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover
 
 # Windows cross build. The _WIN32 branches are otherwise never compiled at all.
 # Needs gcc-mingw-w64-x86-64, and wine to run the result.
+FUZZ_SRC  := $(wildcard tests/fuzz/fuzz_*.c)
+FUZZ_BIN  := $(patsubst tests/fuzz/%.c,tests/fuzz/run_%,$(FUZZ_SRC))
+FUZZ_CC   ?= clang
+FUZZ_SECS ?= 15
+
 MINGW    ?= x86_64-w64-mingw32-gcc
 WINE     ?= wine
 WIN_BIN  := $(patsubst tests/%.c,tests/win_%.exe,$(TEST_SRC))
 
 .PHONY: all test test-asan test-all examples check-c11 check-examples \
-        check-windows clean
+        check-windows fuzz fuzz-build clean
 
 all: test
 
@@ -60,6 +65,26 @@ check-c11:
 	@echo "strict C11 compile: ok"
 
 test-all: check-c11 test test-asan check-examples
+
+# --- fuzzing -------------------------------------------------------------------
+# libFuzzer, so clang whatever CC is. Each target asserts its own invariants
+# and the sanitizers catch the rest. Not part of test-all: it is a search, not
+# a pass or fail, and it takes as long as you let it.
+
+tests/fuzz/run_%: tests/fuzz/%.c utils.h tests/fuzz/fuzz_input.h
+	$(FUZZ_CC) -std=c11 -g -O1 -fsanitize=fuzzer,address,undefined \
+	           -fno-sanitize-recover=all $(WARNINGS) $< -o $@
+
+fuzz-build: $(FUZZ_BIN)
+
+# A bounded run, short enough for CI. Give it FUZZ_SECS=600 to go looking.
+fuzz: $(FUZZ_BIN)
+	@rc=0; for f in $(FUZZ_BIN); do \
+		echo "== $$f ($(FUZZ_SECS)s)"; \
+		mkdir -p $$f.corpus; \
+		$$f $$f.corpus -max_total_time=$(FUZZ_SECS) -print_final_stats=1 \
+		    -rss_limit_mb=2048 || rc=1; \
+	done; exit $$rc
 
 # --- Windows -------------------------------------------------------------------
 
@@ -96,6 +121,6 @@ check-examples: examples/build examples/cli
 	@echo "examples: ok"
 
 clean:
-	rm -f $(TEST_BIN) $(TEST_ASAN) $(WIN_BIN) examples/cli examples/build .compile-check.c
+	rm -f $(TEST_BIN) $(TEST_ASAN) $(WIN_BIN) $(FUZZ_BIN) examples/cli examples/build .compile-check.c
 	rm -rf build
 	rm -rf utest-tmp-*

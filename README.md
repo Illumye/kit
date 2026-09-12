@@ -71,6 +71,7 @@ make check-c11       # strict -std=c11 -Werror, with and without vector maths
 make check-examples  # build and drive the example programs
 make test-all        # all of the above
 make check-windows   # cross-compile with mingw-w64 and run under wine
+make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
 The suite is 77 tests over five files, and the header compiles warning-free
@@ -93,6 +94,24 @@ make examples
 ```
 
 `examples/cli.c` is a smaller one, showing only the option parsing.
+
+## Fuzzing
+
+`tests/fuzz` holds four libFuzzer targets, over the String_View parsers, the
+path helpers, the option parser and the hash map. Two of them are differential:
+the numeric parsers are compared against `strtoll` and `strtoull`, and the hash
+map against a naive array applying the same operations. The path target
+allocates every destination buffer at exactly the requested size, so a
+one-byte overrun is a fault rather than silence.
+
+```sh
+make fuzz                 # 15 seconds per target
+make FUZZ_SECS=600 fuzz   # ten minutes per target
+```
+
+The harness has been mutation tested: injecting a leading-space bug into
+`sv_to_i64` and an off-by-one into `path_join` is caught within seconds, by
+the differential assertion and by AddressSanitizer respectively.
 
 ## Configuration
 

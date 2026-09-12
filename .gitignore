@@ -9,3 +9,10 @@
 /examples/build
 /build/
 /tests/run_*
+
+# Fuzzing
+/tests/fuzz/run_*
+/tests/fuzz/*.corpus/
+crash-*
+leak-*
+timeout-*

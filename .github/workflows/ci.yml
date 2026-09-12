@@ -23,6 +23,18 @@ jobs:
       - name: test-all
         run: make CC=${{ matrix.cc }} test-all
 
+  # A short run on every push. It will not find much in sixty seconds, but it
+  # does prove the targets still build and that the corpus in the repository
+  # is clean. Long runs are a manual make FUZZ_SECS=600 fuzz.
+  fuzz:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: fuzz
+        run: make FUZZ_SECS=60 fuzz
+
   # The _WIN32 branches are compiled and run nowhere else. wine is not a real
   # Windows machine, but it catches what never compiling at all cannot.
   windows-cross:
