@@ -11,7 +11,7 @@
  *
  * SECTIONS:
  *   1.  Logging
- *   2.  Files
+ *   2.  Files & Filesystem
  *   3.  Dynamic Arrays
  *   4.  String Views
  *   5.  Arena Allocator
@@ -64,6 +64,7 @@
 #    include <io.h>
 #else
 #    include <unistd.h>
+#    include <dirent.h>
 #    include <sys/wait.h>
 #    include <sys/stat.h>
 #    include <fcntl.h>
@@ -148,7 +149,7 @@ UTILS_NORETURN void utils_panic_impl(const char *file, int line,
 #define UNREACHABLE(msg) PANIC("UNREACHABLE: %s", msg)
 
 /* --------------------------------------------------------------------------
- * SECTION 2 : FILES
+ * SECTION 2 : FILES & FILESYSTEM
  * -------------------------------------------------------------------------- */
 
 /* Read an entire file into a malloc'd, NUL-terminated buffer (caller owns it).
@@ -171,6 +172,70 @@ bool file_exists(const char *path);
 
 /* Returns the size in bytes of the file at path, or -1 on error. */
 long file_size(const char *path);
+
+/* What lives at path. FILE_KIND_NONE means nothing does, which is not an
+ * error: use it to test existence regardless of the kind. */
+typedef enum {
+    FILE_KIND_NONE,
+    FILE_KIND_REGULAR,
+    FILE_KIND_DIRECTORY,
+    FILE_KIND_OTHER      /* symlink target that is neither, device, socket... */
+} FileKind;
+
+FileKind file_kind(const char *path);
+bool     dir_exists(const char *path);
+
+/* Creates a directory and every missing parent, like `mkdir -p`.
+ * Succeeds when the directory already exists. */
+bool mkdir_p(const char *path);
+
+/* Copies src over dst, creating or truncating it. On POSIX the permission
+ * bits of the source are carried over. Returns false on error. */
+bool copy_file(const char *src, const char *dst);
+
+/* Removes a file. Returns false when it did not exist, which is why an
+ * idempotent caller should test with file_exists first. */
+bool remove_file(const char *path);
+
+/* Renames or moves a file, replacing dst if it exists. Both paths must sit on
+ * the same filesystem. */
+bool rename_file(const char *from, const char *to);
+
+/* Last modification time, in whole seconds since the Unix epoch, or -1.
+ * needs_rebuild compares at the finest resolution the platform exposes,
+ * which is why it does not go through this function. */
+int64_t file_mtime(const char *path);
+
+/* A list of owned, NUL-terminated paths. Works with the da_* macros. */
+typedef struct {
+    char  **items;
+    size_t  count;
+    size_t  capacity;
+} FileList;
+
+void file_list_free(FileList *list);
+
+/* Appends the entries of a directory to `out`, excluding "." and "..".
+ * Names only, not full paths. Sorted with strcmp, so a build driven from the
+ * result is reproducible. Returns false on error, leaving `out` untouched. */
+bool read_dir(const char *path, FileList *out);
+
+/* Is `output` stale with respect to its inputs?
+ *
+ *   1  rebuild needed: output is missing, or an input is at least as recent
+ *   0  output is up to date
+ *  -1  error, already logged: an input is missing or unreadable
+ *
+ * The tri-state is the whole point. A bool would force a missing input to be
+ * reported as "up to date", which silently skips the build step.
+ *
+ *   if (needs_rebuild(exe, srcs, n) != 0) { ... rebuild ... }
+ */
+int needs_rebuild(const char *output, const char **inputs, size_t n_inputs);
+
+/* Same, for a single input. */
+#define needs_rebuild1(output, input) \
+    needs_rebuild((output), (const char *[]){ (input) }, 1)
 
 /* --------------------------------------------------------------------------
  * SECTION 3 : DYNAMIC ARRAYS
@@ -907,6 +972,305 @@ long file_size(const char *path) {
     if (stat(path, &st) != 0) return -1;
     return (long)st.st_size;
 #endif
+}
+
+/* --------------------------------------------------------------------------
+ * Filesystem
+ * -------------------------------------------------------------------------- */
+
+/* Defined with the path helpers further down; needed here by mkdir_p. */
+static bool path__is_sep(char c);
+
+FileKind file_kind(const char *path) {
+#ifdef _WIN32
+    DWORD attr = GetFileAttributesA(path);
+    if (attr == INVALID_FILE_ATTRIBUTES)      return FILE_KIND_NONE;
+    if (attr & FILE_ATTRIBUTE_DIRECTORY)      return FILE_KIND_DIRECTORY;
+    return FILE_KIND_REGULAR;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0)                 return FILE_KIND_NONE;
+    if (S_ISREG(st.st_mode))                  return FILE_KIND_REGULAR;
+    if (S_ISDIR(st.st_mode))                  return FILE_KIND_DIRECTORY;
+    return FILE_KIND_OTHER;
+#endif
+}
+
+bool dir_exists(const char *path) {
+    return file_kind(path) == FILE_KIND_DIRECTORY;
+}
+
+/* Creates one component. An existing directory is a success, which is what
+ * makes mkdir_p idempotent. */
+static bool utils__mkdir_one(const char *path) {
+#ifdef _WIN32
+    if (CreateDirectoryA(path, NULL)) return true;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) return dir_exists(path);
+    LOG(LOG_ERROR, "mkdir_p: cannot create '%s' (err=%lu)", path, GetLastError());
+    return false;
+#else
+    if (mkdir(path, 0777) == 0) return true;
+    if (errno == EEXIST) {
+        if (dir_exists(path)) return true;
+        LOG(LOG_ERROR, "mkdir_p: '%s' exists and is not a directory", path);
+        return false;
+    }
+    LOG(LOG_ERROR, "mkdir_p: cannot create '%s': %s", path, strerror(errno));
+    return false;
+#endif
+}
+
+bool mkdir_p(const char *path) {
+    if (!path || !*path) {
+        LOG(LOG_ERROR, "mkdir_p: empty path");
+        return false;
+    }
+
+    bool          result = true;
+    StringBuilder sb     = {0};
+    const char   *p      = path;
+
+    /* Carry the leading separators over verbatim so that an absolute path
+     * stays absolute and a UNC prefix survives. */
+    while (path__is_sep(*p)) sb_append_char(&sb, *p++);
+
+    while (*p) {
+        const char *start = p;
+        while (*p && !path__is_sep(*p)) p++;
+        sb_append_n(&sb, start, (size_t)(p - start));
+        while (path__is_sep(*p)) p++;
+
+        const char *so_far = sb_cstr(&sb);
+        /* A bare Windows drive ("C:") is not a directory anyone can create. */
+        bool is_drive = (sb.count == 2 && so_far[1] == ':');
+        if (!is_drive && !utils__mkdir_one(so_far)) return_defer(false);
+
+        if (*p) sb_append_char(&sb, PATH_SEP);
+    }
+
+defer:
+    sb_free(&sb);
+    return result;
+}
+
+bool copy_file(const char *src, const char *dst) {
+#ifdef _WIN32
+    if (CopyFileA(src, dst, FALSE)) return true;
+    LOG(LOG_ERROR, "copy_file: '%s' -> '%s' failed (err=%lu)",
+        src, dst, GetLastError());
+    return false;
+#else
+    bool result = true;
+    int  in = -1, out = -1;
+
+    in = open(src, O_RDONLY);
+    if (in < 0) {
+        LOG(LOG_ERROR, "copy_file: cannot open '%s': %s", src, strerror(errno));
+        return_defer(false);
+    }
+
+    struct stat st;
+    if (fstat(in, &st) != 0) {
+        LOG(LOG_ERROR, "copy_file: cannot stat '%s': %s", src, strerror(errno));
+        return_defer(false);
+    }
+
+    /* The mode is applied at creation rather than after, so the file is never
+     * briefly visible with wider permissions than the source. */
+    out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode & 07777);
+    if (out < 0) {
+        LOG(LOG_ERROR, "copy_file: cannot open '%s': %s", dst, strerror(errno));
+        return_defer(false);
+    }
+
+    char buf[UTILS_READ_CHUNK];
+    for (;;) {
+        ssize_t n = read(in, buf, sizeof(buf));
+        if (n == 0) break;
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            LOG(LOG_ERROR, "copy_file: read '%s': %s", src, strerror(errno));
+            return_defer(false);
+        }
+        for (ssize_t off = 0; off < n; ) {
+            ssize_t w = write(out, buf + off, (size_t)(n - off));
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                LOG(LOG_ERROR, "copy_file: write '%s': %s", dst, strerror(errno));
+                return_defer(false);
+            }
+            off += w;
+        }
+    }
+
+defer:
+    if (in >= 0) close(in);
+    /* close() is where a deferred write error surfaces, so it is checked. */
+    if (out >= 0 && close(out) != 0 && result) {
+        LOG(LOG_ERROR, "copy_file: cannot flush '%s': %s", dst, strerror(errno));
+        result = false;
+    }
+    return result;
+#endif
+}
+
+bool remove_file(const char *path) {
+    if (remove(path) == 0) return true;
+    LOG(LOG_ERROR, "remove_file: cannot remove '%s': %s", path, strerror(errno));
+    return false;
+}
+
+bool rename_file(const char *from, const char *to) {
+#ifdef _WIN32
+    /* Plain rename() refuses an existing destination on Windows. */
+    if (MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING)) return true;
+    LOG(LOG_ERROR, "rename_file: '%s' -> '%s' failed (err=%lu)",
+        from, to, GetLastError());
+    return false;
+#else
+    if (rename(from, to) == 0) return true;
+    LOG(LOG_ERROR, "rename_file: '%s' -> '%s': %s", from, to, strerror(errno));
+    return false;
+#endif
+}
+
+/* Modification time at the finest resolution the platform exposes. A build
+ * driven by whole seconds misses a rebuild whenever an input and its output
+ * are written inside the same second, which is common on a fast machine. */
+typedef struct {
+    int64_t sec;
+    int32_t nsec;
+} Utils__Mtime;
+
+static bool utils__mtime(const char *path, Utils__Mtime *out) {
+#ifdef _WIN32
+    WIN32_FILE_ATTRIBUTE_DATA info;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &info)) return false;
+    ULONGLONG ticks = ((ULONGLONG)info.ftLastWriteTime.dwHighDateTime << 32) |
+                       info.ftLastWriteTime.dwLowDateTime;
+    /* FILETIME counts 100 ns intervals from 1601-01-01. */
+    ULONGLONG since_epoch = ticks - 116444736000000000ULL;
+    out->sec  = (int64_t)(since_epoch / 10000000ULL);
+    out->nsec = (int32_t)((since_epoch % 10000000ULL) * 100ULL);
+    return true;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) return false;
+    out->sec = (int64_t)st.st_mtime;
+#    if defined(__APPLE__)
+    out->nsec = (int32_t)st.st_mtimespec.tv_nsec;
+#    elif defined(st_mtime)  /* POSIX.1-2008 names the field st_mtim */
+    out->nsec = (int32_t)st.st_mtim.tv_nsec;
+#    else
+    out->nsec = 0;
+#    endif
+    return true;
+#endif
+}
+
+int64_t file_mtime(const char *path) {
+    Utils__Mtime t;
+    if (!utils__mtime(path, &t)) {
+        LOG(LOG_ERROR, "file_mtime: cannot stat '%s': %s", path, strerror(errno));
+        return -1;
+    }
+    return t.sec;
+}
+
+int needs_rebuild(const char *output, const char **inputs, size_t n_inputs) {
+    Utils__Mtime out_time;
+    if (!utils__mtime(output, &out_time)) return 1;   /* missing: must build */
+
+    for (size_t i = 0; i < n_inputs; ++i) {
+        Utils__Mtime in_time;
+        if (!utils__mtime(inputs[i], &in_time)) {
+            LOG(LOG_ERROR, "needs_rebuild: input '%s' is unreadable: %s",
+                inputs[i], strerror(errno));
+            return -1;
+        }
+        /* ">=" and not ">": same-timestamp means the ordering is unknown, and
+         * rebuilding needlessly is cheaper than shipping a stale artifact. */
+        if (in_time.sec  >  out_time.sec) return 1;
+        if (in_time.sec  == out_time.sec && in_time.nsec >= out_time.nsec) return 1;
+    }
+    return 0;
+}
+
+void file_list_free(FileList *list) {
+    for (size_t i = 0; i < list->count; ++i) free(list->items[i]);
+    da_free(list);
+}
+
+static int utils__cmp_cstr(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static char *utils__strdup(const char *s) {
+    size_t n    = strlen(s) + 1;
+    char  *copy = malloc(n);
+    if (!copy) PANIC("read_dir: out of memory");
+    memcpy(copy, s, n);
+    return copy;
+}
+
+bool read_dir(const char *path, FileList *out) {
+    /* Entries land in a scratch list first, so a failure halfway through
+     * leaves the caller's list exactly as it was. */
+    FileList found = {0};
+    bool     result = true;
+
+#ifdef _WIN32
+    char pattern[MAX_PATH];
+    if (snprintf(pattern, sizeof(pattern), "%s\\*", path) >= (int)sizeof(pattern)) {
+        LOG(LOG_ERROR, "read_dir: path too long: '%s'", path);
+        return false;
+    }
+
+    WIN32_FIND_DATAA fd;
+    HANDLE h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) {
+        LOG(LOG_ERROR, "read_dir: cannot open '%s' (err=%lu)", path, GetLastError());
+        return false;
+    }
+    do {
+        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0)
+            continue;
+        da_append(&found, utils__strdup(fd.cFileName));
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
+    DIR *dir = opendir(path);
+    if (!dir) {
+        LOG(LOG_ERROR, "read_dir: cannot open '%s': %s", path, strerror(errno));
+        return false;
+    }
+
+    errno = 0;
+    for (struct dirent *e = readdir(dir); e != NULL; e = readdir(dir)) {
+        if (strcmp(e->d_name, ".") == 0 || strcmp(e->d_name, "..") == 0) continue;
+        da_append(&found, utils__strdup(e->d_name));
+        errno = 0;
+    }
+    /* readdir returns NULL both at the end and on failure; errno tells them
+     * apart, which is why it is cleared before each call. */
+    if (errno != 0) {
+        LOG(LOG_ERROR, "read_dir: error reading '%s': %s", path, strerror(errno));
+        result = false;
+    }
+    closedir(dir);
+#endif
+
+    if (!result) {
+        file_list_free(&found);
+        return false;
+    }
+
+    if (found.count > 1)
+        qsort(found.items, found.count, sizeof(*found.items), utils__cmp_cstr);
+
+    da_append_many(out, found.items, found.count);
+    da_free(&found);   /* the names themselves now belong to `out` */
+    return true;
 }
 
 /* --------------------------------------------------------------------------
