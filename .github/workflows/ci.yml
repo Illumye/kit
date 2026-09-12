@@ -1,0 +1,24 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Compiles the header under a strict -std=c11 -Werror, runs the suite
+      # natively, then again under AddressSanitizer and UBSan with leak
+      # detection on.
+      - name: test-all
+        run: make CC=${{ matrix.cc }} test-all
