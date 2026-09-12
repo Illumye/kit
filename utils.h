@@ -934,7 +934,13 @@ static inline float map_range(float x,
  * IMPLEMENTATION
  * ============================================================================ */
 
-#ifdef UTILS_IMPLEMENTATION
+/* The declarations above sit behind UTILS_H, but this block deliberately does
+ * not, so that it can be emitted after the guard. It therefore needs a guard
+ * of its own: without it, a translation unit that defines
+ * UTILS_IMPLEMENTATION and then reaches utils.h twice, directly and through
+ * another header, emits every definition twice and fails to compile. */
+#if defined(UTILS_IMPLEMENTATION) && !defined(UTILS_IMPLEMENTATION_DONE)
+#define UTILS_IMPLEMENTATION_DONE
 
 /* --------------------------------------------------------------------------
  * Logging
@@ -2691,7 +2697,7 @@ bool path_is_absolute(const char *path) {
 #endif
 }
 
-#endif /* UTILS_IMPLEMENTATION */
+#endif /* UTILS_IMPLEMENTATION && !UTILS_IMPLEMENTATION_DONE */
 
 /*
  * ============================================================================

@@ -39,9 +39,12 @@ test-asan: $(TEST_ASAN)
 	done; exit $$rc
 
 # The header requests the POSIX symbols it needs, so a strict -std=c11 with no
-# GNU extensions must compile clean. UTILS_NO_VEC_MATH must also stay buildable.
+# GNU extensions must compile clean. UTILS_NO_VEC_MATH must also stay buildable,
+# and reaching the header twice in one translation unit must not duplicate the
+# implementation.
 check-c11:
 	@echo '#define UTILS_IMPLEMENTATION' > .compile-check.c
+	@echo '#include "utils.h"' >> .compile-check.c
 	@echo '#include "utils.h"' >> .compile-check.c
 	@echo 'int main(void) { return 0; }' >> .compile-check.c
 	$(CC) -std=c11 $(WARNINGS) -Werror .compile-check.c -o /dev/null $(LDLIBS)
