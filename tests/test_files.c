@@ -182,7 +182,7 @@ TEST(log_field_count_numbers_the_records) {
 TEST(write_then_read_roundtrip) {
     const char *payload = "hello\nworld\n";
     CHECK(write_file(TMP_TXT, payload, strlen(payload)));
-    CHECK_INT(file_size(TMP_TXT), (long)strlen(payload));
+    CHECK_INT(file_size(TMP_TXT), (int64_t)strlen(payload));
     CHECK(file_exists(TMP_TXT));
 
     char *back = read_file(TMP_TXT);
@@ -285,6 +285,7 @@ TEST(da_append_many_and_remove) {
     CHECK_INT(a.items[0], 40);
     CHECK(da_contains(&a, 20));
     CHECK(!da_contains(&a, 10));
+
     da_free(&a);
 }
 

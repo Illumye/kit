@@ -194,8 +194,10 @@ bool write_file(const char *path, const void *data, size_t size);
 /* Returns true if path exists and is a regular file. */
 bool file_exists(const char *path);
 
-/* Returns the size in bytes of the file at path, or -1 on error. */
-long file_size(const char *path);
+/* Returns the size in bytes of the file at path, or -1 on error.
+ * int64_t rather than long, which is 32 bits on Windows and on every ILP32
+ * target, and would silently cap the answer at 2 GB. */
+int64_t file_size(const char *path);
 
 /* What lives at path. FILE_KIND_NONE means nothing does, which is not an
  * error: use it to test existence regardless of the kind. */
@@ -346,7 +348,7 @@ int needs_rebuild(const char *output, const char **inputs, size_t n_inputs);
 #define da_foreach(Type, it, da) \
     for (Type *it = (da)->items; it < (da)->items + (da)->count; ++it)
 
-/* Linear search — evaluates to true if any element == val.
+/* Linear search - evaluates to true if any element == val.
  * Requires GCC/Clang (statement expression).
  * Example:
  *   if (da_contains(&my_array, 42)) { ... }
@@ -1186,15 +1188,15 @@ bool file_exists(const char *path) {
 #endif
 }
 
-long file_size(const char *path) {
+int64_t file_size(const char *path) {
 #ifdef _WIN32
     WIN32_FILE_ATTRIBUTE_DATA info;
     if (!GetFileAttributesExA(path, GetFileExInfoStandard, &info)) return -1;
-    return (long)(((LONGLONG)info.nFileSizeHigh << 32) | info.nFileSizeLow);
+    return (int64_t)(((ULONGLONG)info.nFileSizeHigh << 32) | info.nFileSizeLow);
 #else
     struct stat st;
     if (stat(path, &st) != 0) return -1;
-    return (long)st.st_size;
+    return (int64_t)st.st_size;
 #endif
 }
 
@@ -2388,9 +2390,12 @@ bool cmd_capture(Cmd *c, StringBuilder *sb) {
     close(pipefd[1]);
 
     char buf[4096];
-    ssize_t nread;
-    while ((nread = read(pipefd[0], buf, sizeof(buf))) > 0)
-        sb_append_n(sb, buf, (size_t)nread);
+    for (;;) {
+        ssize_t nread = read(pipefd[0], buf, sizeof(buf));
+        if (nread > 0) { sb_append_n(sb, buf, (size_t)nread); continue; }
+        if (nread < 0 && errno == EINTR) continue;   /* a signal, not the end */
+        break;
+    }
     close(pipefd[0]);
 
     return proc_wait(pid);

@@ -26,10 +26,6 @@ the error through every macro would poison the ergonomics.
 
 ## Known limitations
 
-**`file_size` returns `long`.** That caps it at 2 GB on Windows and on 32-bit
-platforms. `int64_t` is the correct type, but changing it breaks a published
-signature, so it waits for a deliberate API break.
-
 **No `extern "C"` guard.** The header cannot be included from C++. Adding the
 guard is easy; making the body compile as C++ is not, because it relies on
 implicit `void *` conversions throughout.
