@@ -541,11 +541,18 @@ void cmd_free(Cmd *c);
  * SECTION 11 : HASH / MISC
  * -------------------------------------------------------------------------- */
 
-/* djb2 hash - fast, good distribution for string keys. */
+/* djb2 over a NUL-terminated string, and over arbitrary bytes.
+ *
+ * Fast, but its low bits carry little entropy for keys sharing a prefix
+ * ("key1", "key2", ...), which is exactly the pattern a power-of-two table
+ * indexes on. Run the result through hash_mix32 before masking it. */
 uint32_t hash_str(const char *s);
-
-/* djb2 over arbitrary bytes. */
 uint32_t hash_bytes(const void *data, size_t len);
+
+/* Avalanche step: spreads the entropy of a 32-bit hash across all of its bits
+ * so that the low ones are usable as a bucket index. This is the murmur3
+ * finalizer with Stafford's constants. */
+uint32_t hash_mix32(uint32_t h);
 
 /* --------------------------------------------------------------------------
  * SECTION 12 : HASHMAP
@@ -569,7 +576,8 @@ typedef struct {
 
 typedef struct {
     HM_Entry *entries;
-    size_t    count;
+    size_t    count;     /* live entries */
+    size_t    used;      /* live entries + tombstones; drives the load factor */
     size_t    capacity;
 } HashMap;
 
@@ -1531,6 +1539,15 @@ uint32_t hash_str(const char *s) {
     return hash_bytes(s, strlen(s));
 }
 
+uint32_t hash_mix32(uint32_t h) {
+    h ^= h >> 16;
+    h *= 0x7feb352du;
+    h ^= h >> 15;
+    h *= 0x846ca68bu;
+    h ^= h >> 16;
+    return h;
+}
+
 /* --------------------------------------------------------------------------
  * HashMap
  * -------------------------------------------------------------------------- */
@@ -1548,7 +1565,7 @@ bool hm_entry_live(const HM_Entry *e) {
  * When for_write is true, returns the first usable slot on a miss. */
 static size_t hm__find_slot(const HashMap *hm, const char *key, bool for_write) {
     size_t mask        = hm->capacity - 1;
-    size_t idx         = hash_str(key) & mask;
+    size_t idx         = (size_t)hash_mix32(hash_str(key)) & mask;
     size_t tombstone   = hm->capacity;
 
     for (size_t i = 0; i < hm->capacity; ++i) {
@@ -1569,12 +1586,20 @@ static size_t hm__find_slot(const HashMap *hm, const char *key, bool for_write) 
     return (for_write && tombstone < hm->capacity) ? tombstone : hm->capacity;
 }
 
-static void hm__grow(HashMap *hm) {
-    size_t new_cap     = hm->capacity == 0 ? 16 : hm->capacity * 2;
-    HM_Entry *new_entries = calloc(new_cap, sizeof(HM_Entry));
-    if (!new_entries) PANIC("hm__grow: calloc failed");
+/* Rebuilds the table, dropping every tombstone on the way. The capacity only
+ * doubles when the LIVE entries justify it, so a set/delete workload that keeps
+ * a stable population rehashes in place instead of growing forever. */
+static void hm__rehash(HashMap *hm) {
+    size_t new_cap = 16;
+    if (hm->capacity != 0)
+        new_cap = (hm->count * 10 >= hm->capacity * 7) ? hm->capacity * 2
+                                                       : hm->capacity;
 
-    HashMap tmp = { .entries = new_entries, .count = 0, .capacity = new_cap };
+    HM_Entry *new_entries = calloc(new_cap, sizeof(HM_Entry));
+    if (!new_entries) PANIC("hm__rehash: calloc of %zu entries failed", new_cap);
+
+    HashMap tmp = { .entries = new_entries, .count = 0, .used = 0,
+                    .capacity = new_cap };
 
     for (size_t i = 0; i < hm->capacity; ++i) {
         if (!hm_entry_live(&hm->entries[i])) continue;
@@ -1582,16 +1607,21 @@ static void hm__grow(HashMap *hm) {
         tmp.entries[slot] = hm->entries[i];
         tmp.count++;
     }
+    tmp.used = tmp.count;
 
     free(hm->entries);
     *hm = tmp;
 }
 
 bool hm_set(HashMap *hm, const char *key, void *value) {
-    if (hm->count * 10 >= hm->capacity * 7) hm__grow(hm);
+    /* Counting tombstones here is what keeps probe sequences short: they occupy
+     * a slot just like a live entry as far as linear probing is concerned. */
+    if ((hm->used + 1) * 10 >= hm->capacity * 7) hm__rehash(hm);
 
     size_t slot  = hm__find_slot(hm, key, true);
     bool   is_new = !hm_entry_live(&hm->entries[slot]);
+    /* Reusing a tombstone adds a live entry without occupying a new slot. */
+    if (is_new && hm->entries[slot].key == NULL) hm->used++;
     hm->entries[slot].key   = key;
     hm->entries[slot].value = value;
     if (is_new) hm->count++;
@@ -1616,7 +1646,7 @@ bool hm_delete(HashMap *hm, const char *key) {
     if (slot == hm->capacity) return false;
     hm->entries[slot].key   = HM__TOMBSTONE;
     hm->entries[slot].value = NULL;
-    hm->count--;
+    hm->count--;   /* `used` stays: the slot is still occupied by the tombstone */
     return true;
 }
 
@@ -1624,6 +1654,7 @@ void hm_free(HashMap *hm) {
     free(hm->entries);
     hm->entries  = NULL;
     hm->count    = 0;
+    hm->used     = 0;
     hm->capacity = 0;
 }
 
