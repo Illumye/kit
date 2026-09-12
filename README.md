@@ -72,7 +72,7 @@ make test-all    # all of the above
 make examples    # the example programs
 ```
 
-The suite is 73 tests over five files, and the header compiles warning-free
+The suite is 76 tests over five files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 

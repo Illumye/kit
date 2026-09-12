@@ -48,5 +48,3 @@ concurrent reads on two pipes, or the child blocks once one of them fills.
 
 **The Windows paths are untested.** Every `_WIN32` branch is written but has
 only ever been compiled and run on Linux.
-
-## Queued work
