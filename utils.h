@@ -18,16 +18,28 @@
  *   6.  Time / Stopwatch
  *   7.  Vectorial Math
  *   8.  CLI Args
- *   9.  Command Execution  (sync, async, capture)
- *   10. String Builder
+ *   9.  String Builder
+ *   10. Command Execution  (sync, async, capture)
  *   11. Hash / Misc
- *   12. Scalar Math
- *   13. HashMap
- *   14. Path Utilities
+ *   12. HashMap
+ *   13. Path Utilities
+ *   14. Scalar Math
+ *
+ * REQUIREMENTS:
+ *   C11 or later. On POSIX systems the implementation uses clock_gettime(),
+ *   dprintf() and isatty(); the header requests them via _POSIX_C_SOURCE, so
+ *   it must be included before any other system header when building with a
+ *   strict -std=c11 (as opposed to -std=gnu11).
  */
 
 #ifndef UTILS_H
 #define UTILS_H
+
+/* Requested before any system header: clock_gettime(), dprintf() and isatty()
+ * are hidden behind these under a strict -std=c11. */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
+#    define _POSIX_C_SOURCE 200809L
+#endif
 
 #ifdef _WIN32
 #    ifndef _CRT_SECURE_NO_WARNINGS
@@ -49,6 +61,7 @@
 #ifdef _WIN32
 #    define WIN32_LEAN_AND_MEAN
 #    include <windows.h>
+#    include <io.h>
 #else
 #    include <unistd.h>
 #    include <sys/wait.h>
@@ -65,6 +78,17 @@
          __attribute__((format(printf, fmt_idx, first_idx)))
 #else
 #    define UTILS_PRINTF_FORMAT(fmt_idx, first_idx)
+#endif
+
+/* Marks utils_panic_impl as never returning, so that callers do not trigger
+ * "control reaches end of non-void function" and the optimizer can drop the
+ * code that follows a PANIC. */
+#if defined(__GNUC__) || defined(__clang__)
+#    define UTILS_NORETURN __attribute__((noreturn))
+#elif defined(_MSC_VER)
+#    define UTILS_NORETURN __declspec(noreturn)
+#else
+#    define UTILS_NORETURN
 #endif
 
 #define UTILS_UNUSED(v)      (void)(v)
@@ -97,13 +121,26 @@ typedef enum {
     LOG_CRITICAL
 } LogLevel;
 
+/* When to emit ANSI escape sequences.
+ *   LOG_COLOR_AUTO   colour only when the output stream is a terminal and the
+ *                    NO_COLOR environment variable is unset (default)
+ *   LOG_COLOR_ALWAYS force colour, e.g. when piping into a pager that renders it
+ *   LOG_COLOR_NEVER  never colour
+ */
+typedef enum {
+    LOG_COLOR_AUTO,
+    LOG_COLOR_ALWAYS,
+    LOG_COLOR_NEVER
+} LogColorMode;
+
 void log_set_level(LogLevel level);
 void log_set_output(FILE *fp);   /* NULL resets to stderr (default) */
+void log_set_color(LogColorMode mode);
 
 void utils_log_impl(LogLevel level, const char *file, int line,
                     const char *fmt, ...) UTILS_PRINTF_FORMAT(4, 5);
-void utils_panic_impl(const char *file, int line,
-                      const char *fmt, ...) UTILS_PRINTF_FORMAT(3, 4);
+UTILS_NORETURN void utils_panic_impl(const char *file, int line,
+                                     const char *fmt, ...) UTILS_PRINTF_FORMAT(3, 4);
 
 #define LOG(level, ...)  utils_log_impl(level, __FILE__, __LINE__, __VA_ARGS__)
 #define PANIC(...)       utils_panic_impl(__FILE__, __LINE__, __VA_ARGS__)
@@ -114,8 +151,17 @@ void utils_panic_impl(const char *file, int line,
  * SECTION 2 : FILES
  * -------------------------------------------------------------------------- */
 
-/* Read entire file into a malloc'd buffer (caller owns it). Returns NULL on error. */
+/* Read an entire file into a malloc'd, NUL-terminated buffer (caller owns it).
+ * Returns NULL on error.
+ *
+ * The read is streamed, so it also works on files whose size is not known up
+ * front: pipes, character devices and the synthetic files under /proc.
+ *
+ * read_file_ex additionally reports the byte count, which is the only way to
+ * handle binary data containing embedded NUL bytes. The terminator is always
+ * written, so the result stays usable as a C string for text files. */
 char *read_file(const char *path);
+char *read_file_ex(const char *path, size_t *out_size);
 
 /* Write data to file. Returns false on error. */
 bool write_file(const char *path, const void *data, size_t size);
@@ -140,15 +186,26 @@ long file_size(const char *path);
 #define DA_INIT_CAP 256
 #endif
 
-/* Reserve at least `cap` slots. */
+/* Reserve at least `cap` slots.
+ * The result of realloc lands in a temporary so that the original block is not
+ * leaked when the allocation fails, and capacity growth is checked against
+ * SIZE_MAX so that an absurd request aborts instead of wrapping around. */
 #define da_reserve(da, cap)                                                         \
     do {                                                                            \
-        if ((cap) > (da)->capacity) {                                               \
-            if ((da)->capacity == 0) (da)->capacity = DA_INIT_CAP;                  \
-            while ((cap) > (da)->capacity) (da)->capacity *= 2;                     \
-            (da)->items = realloc((da)->items,                                      \
-                                  (da)->capacity * sizeof(*(da)->items));            \
-            if (!(da)->items) PANIC("da_reserve: realloc failed");                  \
+        size_t _want = (cap);                                                       \
+        if (_want > (da)->capacity) {                                               \
+            size_t _cap = (da)->capacity ? (da)->capacity : (size_t)DA_INIT_CAP;    \
+            while (_want > _cap) {                                                  \
+                if (_cap > SIZE_MAX / 2) PANIC("da_reserve: capacity overflow");    \
+                _cap *= 2;                                                          \
+            }                                                                       \
+            if (_cap > SIZE_MAX / sizeof(*(da)->items))                             \
+                PANIC("da_reserve: allocation size overflow");                      \
+            void *_mem = realloc((da)->items, _cap * sizeof(*(da)->items));         \
+            if (!_mem) PANIC("da_reserve: realloc of %zu bytes failed",             \
+                             _cap * sizeof(*(da)->items));                          \
+            (da)->items    = _mem;                                                  \
+            (da)->capacity = _cap;                                                  \
         }                                                                           \
     } while (0)
 
@@ -160,22 +217,30 @@ long file_size(const char *path);
     } while (0)
 
 /* Append n items from a pointer. */
-#define da_append_many(da, src, n)              \
-    do {                                        \
-        da_reserve((da), (da)->count + (n));    \
-        memcpy((da)->items + (da)->count,       \
-               (src),                           \
-               (n) * sizeof(*(da)->items));      \
-        (da)->count += (n);                     \
+#define da_append_many(da, src, n)                  \
+    do {                                            \
+        size_t _n = (n);                            \
+        if (_n > 0) {                               \
+            da_reserve((da), (da)->count + _n);     \
+            memcpy((da)->items + (da)->count,       \
+                   (src),                           \
+                   _n * sizeof(*(da)->items));      \
+            (da)->count += _n;                      \
+        }                                           \
     } while (0)
 
 /* Pop the last element (assert non-empty). */
 #define da_pop(da) \
-    ((da)->items[(da)->count > 0 ? --(da)->count : (PANIC("da_pop on empty array"), 0)])
+    ((da)->items[(da)->count > 0 ? --(da)->count \
+                                 : (PANIC("da_pop on empty array"), (size_t)0)])
 
 /* Access first / last with bounds check. */
-#define da_first(da) ((da)->items[(da)->count > 0 ? 0                : (PANIC("da_first on empty array"), 0)])
-#define da_last(da)  ((da)->items[(da)->count > 0 ? (da)->count - 1  : (PANIC("da_last on empty array"), 0)])
+#define da_first(da) \
+    ((da)->items[(da)->count > 0 ? (size_t)0 \
+                                 : (PANIC("da_first on empty array"), (size_t)0)])
+#define da_last(da) \
+    ((da)->items[(da)->count > 0 ? (da)->count - 1 \
+                                 : (PANIC("da_last on empty array"), (size_t)0)])
 
 /* Remove element at index i, swap with last (unordered). */
 #define da_remove_unordered(da, i)                           \
@@ -476,14 +541,14 @@ void cmd_free(Cmd *c);
  * SECTION 11 : HASH / MISC
  * -------------------------------------------------------------------------- */
 
-/* djb2 hash — fast, good distribution for string keys. */
+/* djb2 hash - fast, good distribution for string keys. */
 uint32_t hash_str(const char *s);
 
 /* djb2 over arbitrary bytes. */
 uint32_t hash_bytes(const void *data, size_t len);
 
 /* --------------------------------------------------------------------------
- * SECTION 13 : HASHMAP
+ * SECTION 12 : HASHMAP
  *
  * String-keyed, void*-valued hash map (open addressing, linear probing).
  * Keys are NOT copied — the caller must ensure they outlive the map.
@@ -535,7 +600,7 @@ void  hm_free(HashMap *hm);
         if (hm_entry_live(it))
 
 /* --------------------------------------------------------------------------
- * SECTION 14 : PATH UTILITIES
+ * SECTION 13 : PATH UTILITIES
  * -------------------------------------------------------------------------- */
 
 #ifdef _WIN32
@@ -561,7 +626,7 @@ char *path_join(char *buf, size_t bufsz, const char *a, const char *b);
 bool  path_is_absolute(const char *path);
 
 /* --------------------------------------------------------------------------
- * SECTION 12 : SCALAR MATH
+ * SECTION 14 : SCALAR MATH
  * -------------------------------------------------------------------------- */
 
 #define UTILS_MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -607,15 +672,16 @@ static inline float map_range(float x,
  * Logging
  * -------------------------------------------------------------------------- */
 
-static LogLevel  UTILS__MIN_LEVEL = LOG_DEBUG;
-static FILE     *UTILS__OUTPUT    = NULL;  /* NULL → stderr */
+static LogLevel      UTILS__MIN_LEVEL = LOG_DEBUG;
+static FILE         *UTILS__OUTPUT    = NULL;  /* NULL -> stderr */
+static LogColorMode  UTILS__COLOR     = LOG_COLOR_AUTO;
 
 static const char *UTILS__COLORS[] = {
-    "\x1b[90m",  /* DEBUG    — grey          */
-    "\x1b[34m",  /* INFO     — blue          */
-    "\x1b[33m",  /* WARNING  — yellow        */
-    "\x1b[31m",  /* ERROR    — red           */
-    "\x1b[41m",  /* CRITICAL — red bg        */
+    "\x1b[90m",  /* DEBUG    - grey          */
+    "\x1b[34m",  /* INFO     - blue          */
+    "\x1b[33m",  /* WARNING  - yellow        */
+    "\x1b[31m",  /* ERROR    - red           */
+    "\x1b[41m",  /* CRITICAL - red bg        */
 };
 
 static const char *UTILS__LABELS[] = {
@@ -630,39 +696,77 @@ void log_set_output(FILE *fp) {
     UTILS__OUTPUT = fp;
 }
 
+void log_set_color(LogColorMode mode) {
+    UTILS__COLOR = mode;
+}
+
+static bool utils__stream_is_tty(FILE *out) {
+#ifdef _WIN32
+    return _isatty(_fileno(out)) != 0;
+#else
+    return isatty(fileno(out)) != 0;
+#endif
+}
+
+/* Escape sequences are worthless in a log file and actively harmful when the
+ * output is grepped, so AUTO keeps them for terminals only. NO_COLOR is the
+ * cross-tool convention (https://no-color.org). */
+static bool utils__use_color(FILE *out) {
+    switch (UTILS__COLOR) {
+        case LOG_COLOR_ALWAYS: return true;
+        case LOG_COLOR_NEVER:  return false;
+        default: break;
+    }
+    const char *no_color = getenv("NO_COLOR");
+    if (no_color && *no_color) return false;
+    return utils__stream_is_tty(out);
+}
+
+/* localtime() hands back a shared static buffer; the _r / _s variants keep the
+ * logger usable from more than one thread. */
+static void utils__timestamp(char *buf, size_t bufsz) {
+    time_t t = time(NULL);
+    struct tm tm_buf;
+    struct tm *tm_info;
+#ifdef _WIN32
+    tm_info = (localtime_s(&tm_buf, &t) == 0) ? &tm_buf : NULL;
+#else
+    tm_info = localtime_r(&t, &tm_buf);
+#endif
+    if (!tm_info || strftime(buf, bufsz, "%H:%M:%S", tm_info) == 0)
+        snprintf(buf, bufsz, "--:--:--");
+}
+
+static void utils__log_prefix(FILE *out, const char *color, const char *label,
+                              const char *file, int line) {
+    char time_buf[16];
+    utils__timestamp(time_buf, sizeof(time_buf));
+
+    if (utils__use_color(out))
+        fprintf(out, "%s[%s] [%s]\x1b[0m \x1b[90m[%s:%d]\x1b[0m ",
+                color, time_buf, label, file, line);
+    else
+        fprintf(out, "[%s] [%s] [%s:%d] ", time_buf, label, file, line);
+}
+
 void utils_log_impl(LogLevel level, const char *file, int line,
                     const char *fmt, ...) {
     if (level < UTILS__MIN_LEVEL) return;
 
     FILE *out = UTILS__OUTPUT ? UTILS__OUTPUT : stderr;
-
-    time_t t = time(NULL);
-    struct tm *tm_info = localtime(&t);
-    char time_buf[10];
-    strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm_info);
-
-    fprintf(out, "%s[%s] [%s] \x1b[90m[%s:%d]\x1b[0m ",
-            UTILS__COLORS[level], time_buf, UTILS__LABELS[level],
-            file, line);
+    utils__log_prefix(out, UTILS__COLORS[level], UTILS__LABELS[level], file, line);
 
     va_list args;
     va_start(args, fmt);
     vfprintf(out, fmt, args);
     va_end(args);
 
-    fprintf(out, "\n");
+    fputc('\n', out);
 }
 
 void utils_panic_impl(const char *file, int line, const char *fmt, ...) {
     FILE *out = UTILS__OUTPUT ? UTILS__OUTPUT : stderr;
-
-    time_t t = time(NULL);
-    struct tm *tm_info = localtime(&t);
-    char time_buf[10];
-    strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm_info);
-
-    fprintf(out, "%s[%s] [PANIC] \x1b[90m[%s:%d]\x1b[0m ",
-            UTILS__COLORS[LOG_CRITICAL], time_buf, file, line);
+    utils__log_prefix(out, UTILS__COLORS[LOG_CRITICAL], "PANIC", file, line);
 
     va_list args;
     va_start(args, fmt);
@@ -670,6 +774,7 @@ void utils_panic_impl(const char *file, int line, const char *fmt, ...) {
     va_end(args);
 
     fprintf(out, "\nAborting...\n");
+    fflush(out);
     abort();
 }
 
@@ -677,10 +782,19 @@ void utils_panic_impl(const char *file, int line, const char *fmt, ...) {
  * Files
  * -------------------------------------------------------------------------- */
 
-char *read_file(const char *path) {
-    bool result = true;
-    FILE *f = NULL;
-    char *buffer = NULL;
+#ifndef UTILS_READ_CHUNK
+#define UTILS_READ_CHUNK 65536
+#endif
+
+/* Streamed so that the buffer never depends on ftell(): pipes, terminals and
+ * the /proc files all report a size of 0 while still delivering data. The
+ * reported size, when plausible, is only used to seed the capacity. */
+char *read_file_ex(const char *path, size_t *out_size) {
+    bool   result = true;
+    FILE  *f      = NULL;
+    char  *buffer = NULL;
+    size_t len    = 0;
+    size_t cap    = 0;
 
     f = fopen(path, "rb");
     if (!f) {
@@ -688,53 +802,77 @@ char *read_file(const char *path) {
         return_defer(false);
     }
 
-    if (fseek(f, 0, SEEK_END) != 0) {
-        LOG(LOG_ERROR, "read_file: fseek failed on '%s'", path);
-        return_defer(false);
+    if (fseek(f, 0, SEEK_END) == 0) {
+        long hint = ftell(f);
+        if (hint > 0) cap = (size_t)hint;
+        rewind(f);
     }
-    long length = ftell(f);
-    if (length < 0) {
-        LOG(LOG_ERROR, "read_file: ftell failed on '%s'", path);
-        return_defer(false);
-    }
-    rewind(f);
+    if (cap == 0) cap = UTILS_READ_CHUNK;
 
-    buffer = malloc((size_t)length + 1);
+    buffer = malloc(cap + 1);
     if (!buffer) {
-        LOG(LOG_ERROR, "read_file: malloc failed");
+        LOG(LOG_ERROR, "read_file: out of memory reading '%s'", path);
         return_defer(false);
     }
 
-    size_t nread = fread(buffer, 1, (size_t)length, f);
-    if (nread != (size_t)length) {
-        LOG(LOG_ERROR, "read_file: short read on '%s' (expected %zu, got %zu)",
-            path, (size_t)length, nread);
+    for (;;) {
+        if (len == cap) {
+            if (cap > SIZE_MAX / 2 - 1) {
+                LOG(LOG_ERROR, "read_file: '%s' is too large to buffer", path);
+                return_defer(false);
+            }
+            cap *= 2;
+            char *grown = realloc(buffer, cap + 1);
+            if (!grown) {
+                LOG(LOG_ERROR, "read_file: out of memory reading '%s'", path);
+                return_defer(false);
+            }
+            buffer = grown;
+        }
+
+        size_t n = fread(buffer + len, 1, cap - len, f);
+        len += n;
+        if (n == 0) break;
+    }
+
+    if (ferror(f)) {
+        LOG(LOG_ERROR, "read_file: read error on '%s': %s", path, strerror(errno));
         return_defer(false);
     }
-    buffer[nread] = '\0';
 
-    LOG(LOG_DEBUG, "read_file: '%s' (%ld bytes)", path, length);
+    buffer[len] = '\0';
+    LOG(LOG_DEBUG, "read_file: '%s' (%zu bytes)", path, len);
 
 defer:
     if (f) fclose(f);
     if (!result) { free(buffer); return NULL; }
+    if (out_size) *out_size = len;
     return buffer;
 }
 
+char *read_file(const char *path) {
+    return read_file_ex(path, NULL);
+}
+
+/* A buffered write only reaches the disk on fclose, so its return value is the
+ * one that reports a full filesystem or a failing quota. */
 bool write_file(const char *path, const void *data, size_t size) {
     FILE *f = fopen(path, "wb");
     if (!f) {
         LOG(LOG_ERROR, "write_file: cannot open '%s': %s", path, strerror(errno));
         return false;
     }
-    size_t nwritten = fwrite(data, 1, size, f);
-    fclose(f);
-    if (nwritten != size) {
-        LOG(LOG_ERROR, "write_file: short write on '%s'", path);
-        return false;
+
+    bool ok = (size == 0) || (fwrite(data, 1, size, f) == size);
+    if (!ok) LOG(LOG_ERROR, "write_file: short write on '%s': %s", path, strerror(errno));
+
+    if (fclose(f) != 0) {
+        LOG(LOG_ERROR, "write_file: cannot flush '%s': %s", path, strerror(errno));
+        ok = false;
     }
-    LOG(LOG_DEBUG, "write_file: '%s' (%zu bytes)", path, size);
-    return true;
+
+    if (ok) LOG(LOG_DEBUG, "write_file: '%s' (%zu bytes)", path, size);
+    return ok;
 }
 
 bool file_exists(const char *path) {
@@ -1042,36 +1180,38 @@ bool opts_parse(Opt *opts, size_t n_opts, int *argc, char ***argv) {
     return true;
 }
 
+#define OPTS__HELP_COLUMN 36
+
+/* The left column is built in a StringBuilder rather than a fixed buffer, so a
+ * long option name wraps instead of being cut off. */
 void opts_usage(FILE *fp, const char *program, const Opt *opts, size_t n_opts) {
     fprintf(fp, "Usage: %s [options] ...\n\nOptions:\n", program);
+
+    StringBuilder left = {0};
     for (size_t i = 0; i < n_opts; i++) {
         const Opt *o = &opts[i];
-        char left[48] = {0};
-        int  pos = 0;
+        sb_reset(&left);
 
-        if (o->short_name)
-            pos += snprintf(left + pos, sizeof(left) - (size_t)pos, "  -%c", o->short_name);
-        else
-            pos += snprintf(left + pos, sizeof(left) - (size_t)pos, "    ");
+        if (o->short_name) sb_appendf(&left, "  -%c", o->short_name);
+        else               sb_append(&left, "    ");
 
-        if (o->short_name && o->long_name)
-            pos += snprintf(left + pos, sizeof(left) - (size_t)pos, ", ");
-        else if (o->long_name)
-            pos += snprintf(left + pos, sizeof(left) - (size_t)pos, "  ");
+        if (o->short_name && o->long_name) sb_append(&left, ", ");
+        else if (o->long_name)             sb_append(&left, "  ");
 
         if (o->long_name) {
-            if (o->meta)
-                pos += snprintf(left + pos, sizeof(left) - (size_t)pos,
-                                "--%s=<%s>", o->long_name, o->meta);
-            else
-                pos += snprintf(left + pos, sizeof(left) - (size_t)pos,
-                                "--%s", o->long_name);
+            if (o->meta) sb_appendf(&left, "--%s=<%s>", o->long_name, o->meta);
+            else         sb_appendf(&left, "--%s", o->long_name);
         } else if (o->meta) {
-            pos += snprintf(left + pos, sizeof(left) - (size_t)pos, " <%s>", o->meta);
+            sb_appendf(&left, " <%s>", o->meta);
         }
 
-        fprintf(fp, "%-36s %s\n", left, o->help ? o->help : "");
+        const char *help = o->help ? o->help : "";
+        if (left.count > OPTS__HELP_COLUMN)
+            fprintf(fp, "%s\n%*s %s\n", sb_cstr(&left), OPTS__HELP_COLUMN, "", help);
+        else
+            fprintf(fp, "%-*s %s\n", OPTS__HELP_COLUMN, sb_cstr(&left), help);
     }
+    sb_free(&left);
 }
 
 /* --------------------------------------------------------------------------
@@ -1151,16 +1291,22 @@ void cmd_extend(Cmd *c, ...) {
     va_end(args);
 }
 
+/* Echoes the command about to run. Honours the log level and the colour
+ * policy, so a quiet program stays quiet and a redirected build log stays
+ * free of escape sequences. */
 static void utils__cmd_log(Cmd *c) {
-    fprintf(stderr, "\x1b[35m[CMD]\x1b[0m ");
+    if (LOG_INFO < UTILS__MIN_LEVEL) return;
+
+    FILE *out   = UTILS__OUTPUT ? UTILS__OUTPUT : stderr;
+    bool  color = utils__use_color(out);
+
+    fprintf(out, "%s[CMD]%s", color ? "\x1b[35m" : "", color ? "\x1b[0m" : "");
     for (size_t i = 0; i < c->count; ++i) {
         bool needs_quote = (strchr(c->items[i], ' ') != NULL);
-        if (needs_quote) fputc('\'', stderr);
-        fputs(c->items[i], stderr);
-        if (needs_quote) fputc('\'', stderr);
-        fputc(' ', stderr);
+        fprintf(out, needs_quote ? " '%s'" : " %s", c->items[i]);
     }
-    fputc('\n', stderr);
+    fputc('\n', out);
+    fflush(out);
 }
 
 #ifdef _WIN32
@@ -1265,11 +1411,12 @@ Proc cmd_run_async(Cmd *c) {
         return INVALID_PROC;
     }
     if (pid == 0) {
-        execvp(c->items[0], (char *const *)c->items);
-        /* fprintf on a shared FILE* is unsafe after fork — use dprintf */
-        dprintf(STDERR_FILENO, "cmd_run_async: execvp '%s' failed: %s\n",
-                c->items[0], strerror(errno));
-        _exit(1);
+        execvp(c->items[0], (char *const *)(void *)c->items);
+        /* fprintf on a shared FILE* is unsafe after fork - use dprintf */
+        if (LOG_ERROR >= UTILS__MIN_LEVEL)
+            dprintf(STDERR_FILENO, "cmd_run_async: execvp '%s' failed: %s\n",
+                    c->items[0], strerror(errno));
+        _exit(127);
     }
     return pid;
 }
@@ -1319,10 +1466,11 @@ bool cmd_capture(Cmd *c, StringBuilder *sb) {
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
         close(pipefd[1]);
-        execvp(c->items[0], (char *const *)c->items);
-        dprintf(STDERR_FILENO, "cmd_capture: execvp '%s' failed: %s\n",
-                c->items[0], strerror(errno));
-        _exit(1);
+        execvp(c->items[0], (char *const *)(void *)c->items);
+        if (LOG_ERROR >= UTILS__MIN_LEVEL)
+            dprintf(STDERR_FILENO, "cmd_capture: execvp '%s' failed: %s\n",
+                    c->items[0], strerror(errno));
+        _exit(127);
     }
 
     close(pipefd[1]);
@@ -1504,13 +1652,22 @@ const char *path_ext(const char *path) {
     return dot ? dot : path + strlen(path);
 }
 
+/* Every write is bounded by bufsz; a bufsz of 0 leaves buf untouched. The
+ * previous "bufsz - 1" arithmetic wrapped around on an empty buffer. */
 char *path_dirname(const char *path, char *buf, size_t bufsz) {
-    const char *base = path_basename(path);
-    size_t len = (size_t)(base - path);
+    if (bufsz == 0) return buf;
 
+    const char *base = path_basename(path);
+    size_t      len  = (size_t)(base - path);
+
+    /* Drop the trailing separators, but keep a lone root "/". */
     while (len > 1 && path__is_sep(path[len - 1])) len--;
 
-    if (len == 0) { buf[0] = '.'; buf[1] = '\0'; return buf; }
+    if (len == 0) {
+        if (bufsz >= 2) { buf[0] = '.'; buf[1] = '\0'; }
+        else            { buf[0] = '\0'; }
+        return buf;
+    }
 
     size_t n = len < bufsz - 1 ? len : bufsz - 1;
     memcpy(buf, path, n);
@@ -1519,18 +1676,20 @@ char *path_dirname(const char *path, char *buf, size_t bufsz) {
 }
 
 char *path_join(char *buf, size_t bufsz, const char *a, const char *b) {
-    size_t a_len  = strlen(a);
+    if (bufsz == 0) return buf;
+
+    size_t a_len   = strlen(a);
     size_t written = a_len < bufsz - 1 ? a_len : bufsz - 1;
     memcpy(buf, a, written);
 
     while (path__is_sep(*b)) b++;
 
-    if (written < bufsz - 1 && written > 0 &&
-        !path__is_sep(buf[written - 1]) && *b)
+    if (*b && written > 0 && written < bufsz - 1 && !path__is_sep(buf[written - 1]))
         buf[written++] = PATH_SEP;
 
     size_t b_len = strlen(b);
-    size_t n     = b_len < bufsz - written - 1 ? b_len : bufsz - written - 1;
+    size_t avail = bufsz - 1 - written;
+    size_t n     = b_len < avail ? b_len : avail;
     memcpy(buf + written, b, n);
     buf[written + n] = '\0';
     return buf;
