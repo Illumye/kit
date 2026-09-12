@@ -100,3 +100,11 @@ Linux, and the header does not compile as C++.
 ## Requirements
 
 C11. Tested with gcc and clang on Linux.
+
+## License
+
+Public domain, under [the Unlicense](LICENSE). Copy the header into your
+project, change it, ship it, sell it. No attribution required.
+
+The full licence text is repeated at the end of `utils.h`, because a header
+meant to be copied on its own has to carry its own terms.

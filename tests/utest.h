@@ -1,6 +1,9 @@
 /*
  * utest.h - micro test framework, single header, no dependency.
  *
+ * SPDX-License-Identifier: Unlicense
+ * Public domain, like the library it tests. See LICENSE.
+ *
  * USAGE:
  *   #include "utest.h"
  *
