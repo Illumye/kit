@@ -45,6 +45,13 @@
 #    define _POSIX_C_SOURCE 200809L
 #endif
 
+/* mingw defaults to the msvcrt printf, which predates C99 and rejects %zu.
+ * This switches it to mingw's own conforming implementation, and like the
+ * macro above it only counts if nothing has included <stdio.h> yet. */
+#if defined(__MINGW32__) && !defined(__USE_MINGW_ANSI_STDIO)
+#    define __USE_MINGW_ANSI_STDIO 1
+#endif
+
 #ifdef _WIN32
 #    ifndef _CRT_SECURE_NO_WARNINGS
 #        define _CRT_SECURE_NO_WARNINGS
@@ -79,7 +86,13 @@
  * Compiler helpers
  * -------------------------------------------------------------------------- */
 
-#if defined(__GNUC__) || defined(__clang__)
+/* On mingw the "printf" archetype means the msvcrt dialect, which has no %zu,
+ * so the checker rejects formats the runtime accepts once
+ * __USE_MINGW_ANSI_STDIO is on. "gnu_printf" is the archetype that matches. */
+#if defined(__MINGW32__) && (defined(__GNUC__) || defined(__clang__))
+#    define UTILS_PRINTF_FORMAT(fmt_idx, first_idx) \
+         __attribute__((format(gnu_printf, fmt_idx, first_idx)))
+#elif defined(__GNUC__) || defined(__clang__)
 #    define UTILS_PRINTF_FORMAT(fmt_idx, first_idx) \
          __attribute__((format(printf, fmt_idx, first_idx)))
 #else
