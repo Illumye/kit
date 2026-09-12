@@ -50,9 +50,3 @@ concurrent reads on two pipes, or the child blocks once one of them fills.
 only ever been compiled and run on Linux.
 
 ## Queued work
-
-**Continuous integration.** A workflow running `make test-all` under both gcc
-and clang, so the guarantees the test suite provides are actually enforced.
-
-**No README.** The header documents itself section by section, but there is no
-entry point explaining what the library is or how to build the tests.
