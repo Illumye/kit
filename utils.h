@@ -767,9 +767,19 @@ Proc cmd_run_async(Cmd *c);
 /* Wait for an async process. Returns false if the child exited non-zero. */
 bool proc_wait(Proc p);
 
-/* Run synchronously but capture stdout into sb (stderr goes to stderr).
- * Returns false on error. */
+/* Run synchronously and capture the child's output into sb.
+ *
+ *   cmd_capture         stdout only; stderr passes through to the parent
+ *   cmd_capture_merged  stdout and stderr interleaved, as a terminal sees them
+ *
+ * Merging uses a single pipe, so the two streams cannot deadlock against each
+ * other. Capturing them into two separate buffers would need concurrent reads
+ * and is deliberately not offered.
+ *
+ * Returns false when the child fails to start or exits non-zero. Whatever the
+ * child managed to write is still appended to sb. */
 bool cmd_capture(Cmd *c, StringBuilder *sb);
+bool cmd_capture_merged(Cmd *c, StringBuilder *sb);
 
 /* Variadic shorthand — terminate with NULL.
  * cmd_run_args("ls", "-la", NULL); */
@@ -2287,7 +2297,7 @@ bool proc_wait(Proc p) {
     return true;
 }
 
-bool cmd_capture(Cmd *c, StringBuilder *sb) {
+static bool utils__cmd_capture(Cmd *c, StringBuilder *sb, bool merge_stderr) {
     HANDLE pipe_r, pipe_w;
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
     if (!CreatePipe(&pipe_r, &pipe_w, &sa, 0)) {
@@ -2302,7 +2312,7 @@ bool cmd_capture(Cmd *c, StringBuilder *sb) {
     PROCESS_INFORMATION pi;
     ZeroMemory(&si, sizeof(si)); si.cb = sizeof(si);
     si.hStdOutput = pipe_w;
-    si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+    si.hStdError  = merge_stderr ? pipe_w : GetStdHandle(STD_ERROR_HANDLE);
     si.dwFlags    = STARTF_USESTDHANDLES;
     ZeroMemory(&pi, sizeof(pi));
 
@@ -2375,7 +2385,9 @@ bool proc_wait(Proc p) {
     return false;
 }
 
-bool cmd_capture(Cmd *c, StringBuilder *sb) {
+/* One pipe carries both streams when they are merged, so the child can never
+ * block on a full pipe that the parent is not reading. */
+static bool utils__cmd_capture(Cmd *c, StringBuilder *sb, bool merge_stderr) {
     int pipefd[2];
     if (pipe(pipefd) < 0) {
         LOG(LOG_ERROR, "cmd_capture: pipe failed: %s", strerror(errno));
@@ -2396,6 +2408,7 @@ bool cmd_capture(Cmd *c, StringBuilder *sb) {
     if (pid == 0) {
         close(pipefd[0]);
         dup2(pipefd[1], STDOUT_FILENO);
+        if (merge_stderr) dup2(pipefd[1], STDERR_FILENO);
         close(pipefd[1]);
         execvp(c->items[0], (char *const *)(void *)c->items);
         if (LOG_ERROR >= UTILS__MIN_LEVEL)
@@ -2419,6 +2432,14 @@ bool cmd_capture(Cmd *c, StringBuilder *sb) {
 }
 
 #endif /* _WIN32 / POSIX */
+
+bool cmd_capture(Cmd *c, StringBuilder *sb) {
+    return utils__cmd_capture(c, sb, false);
+}
+
+bool cmd_capture_merged(Cmd *c, StringBuilder *sb) {
+    return utils__cmd_capture(c, sb, true);
+}
 
 bool cmd_run(Cmd *c) {
     Proc p = cmd_run_async(c);

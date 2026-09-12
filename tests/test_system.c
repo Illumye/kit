@@ -209,6 +209,34 @@ TEST(cmd_capture_handles_output_larger_than_the_pipe_buffer) {
     cmd_free(&c);
 }
 
+TEST(cmd_capture_merged_interleaves_both_streams) {
+    Cmd c = {0};
+    cmd_extend(&c, "sh", "-c", "echo out; echo err >&2; echo out2", NULL);
+
+    StringBuilder sb = {0};
+    CHECK(cmd_capture_merged(&c, &sb));
+    CHECK(sv_contains(SV(sb_cstr(&sb)), SV("out\n")));
+    CHECK(sv_contains(SV(sb_cstr(&sb)), SV("err\n")));
+    CHECK(sv_contains(SV(sb_cstr(&sb)), SV("out2\n")));
+
+    /* Plain cmd_capture must still leave stderr alone. */
+    sb_reset(&sb);
+    cmd_reset(&c);
+    cmd_extend(&c, "sh", "-c", "echo out; echo err >&2", NULL);
+    CHECK(cmd_capture(&c, &sb));
+    CHECK_STR(sb_cstr(&sb), "out\n");
+
+    /* Output is kept even when the child fails. */
+    sb_reset(&sb);
+    cmd_reset(&c);
+    cmd_extend(&c, "sh", "-c", "echo partial >&2; exit 3", NULL);
+    CHECK(!cmd_capture_merged(&c, &sb));
+    CHECK_STR(sb_cstr(&sb), "partial\n");
+
+    sb_free(&sb);
+    cmd_free(&c);
+}
+
 TEST(cmd_run_reports_the_exit_status) {
     CHECK(cmd_run_args("true", NULL));
     CHECK(!cmd_run_args("false", NULL));
@@ -320,6 +348,7 @@ int main(void) {
 #ifndef _WIN32
     RUN(cmd_capture_collects_stdout);
     RUN(cmd_capture_handles_output_larger_than_the_pipe_buffer);
+    RUN(cmd_capture_merged_interleaves_both_streams);
     RUN(cmd_run_reports_the_exit_status);
     RUN(cmd_reset_keeps_the_allocation);
     RUN(cmd_run_async_runs_children_in_parallel);

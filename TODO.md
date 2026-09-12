@@ -42,8 +42,9 @@ both yield two fields. Distinguishing them needs a state bit hidden inside the
 where `da_index_of` is the portable equivalent. An expression-valued macro
 cannot be written without them.
 
-**`cmd_capture` captures stdout only.** stderr passes through to the parent.
-Capturing both, or merging them, needs a second pipe and a select loop.
+**Separate stdout and stderr capture is not offered.** `cmd_capture` takes
+stdout and `cmd_capture_merged` takes both interleaved. Two buffers would need
+concurrent reads on two pipes, or the child blocks once one of them fills.
 
 **The Windows paths are untested.** Every `_WIN32` branch is written but has
 only ever been compiled and run on Linux.
