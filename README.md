@@ -113,6 +113,12 @@ The harness has been mutation tested: injecting a leading-space bug into
 `sv_to_i64` and an off-by-one into `path_join` is caught within seconds, by
 the differential assertion and by AddressSanitizer respectively.
 
+No corpus is committed, on purpose. These targets saturate their reachable
+code almost immediately: a 180-second run reaches exactly the coverage a
+20-second run does, 113 million executions finding nothing a first few million
+did not. A stored corpus would be a couple of megabytes of blobs buying
+nothing, so each run rediscovers what it needs.
+
 ## Configuration
 
 Define these before including the header to change its defaults.

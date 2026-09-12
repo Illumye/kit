@@ -13,6 +13,7 @@
 # Fuzzing
 /tests/fuzz/run_*
 /tests/fuzz/*.corpus/
+/tests/fuzz/corpus/
 crash-*
 leak-*
 timeout-*
