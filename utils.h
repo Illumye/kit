@@ -575,13 +575,15 @@ char *args_shift(int *argc, char ***argv);
  *   if (!opts_parse_arr(opts, &argc, &argv)) return 1;
  *
  * Supported forms:
- *   -v           flag
- *   -o file      short with separate value
- *   -ofile       short with attached value
- *   -o=file      short with '=' separator
+ *   -v            flag
+ *   -vn           grouped flags, same as -v -n
+ *   -o file       short with separate value
+ *   -ofile        short with attached value
+ *   -o=file       short with '=' separator
+ *   -vofile       a group ending on a value option
  *   --output file
  *   --output=file
- *   --           ends option parsing; remaining args are positional
+ *   --            ends option parsing; remaining args are positional
  * -------------------------------------------------------------------------- */
 
 typedef enum { OPTTYPE_FLAG, OPTTYPE_STR, OPTTYPE_INT } OptType;
@@ -1700,87 +1702,128 @@ char *args_shift(int *argc, char ***argv) {
     return result;
 }
 
-bool opts_parse(Opt *opts, size_t n_opts, int *argc, char ***argv) {
-    int out = 0;
-    for (int i = 0; i < *argc; ) {
-        char *arg = (*argv)[i];
+static Opt *opts__find_short(Opt *opts, size_t n_opts, char c) {
+    for (size_t i = 0; i < n_opts; i++)
+        if (opts[i].short_name && opts[i].short_name == c) return &opts[i];
+    return NULL;
+}
 
-        if (strcmp(arg, "--") == 0) {
-            i++;
-            while (i < *argc) (*argv)[out++] = (*argv)[i++];
-            break;
+static Opt *opts__find_long(Opt *opts, size_t n_opts, const char *key, size_t len) {
+    for (size_t i = 0; i < n_opts; i++) {
+        const char *name = opts[i].long_name;
+        if (name && strlen(name) == len && strncmp(name, key, len) == 0)
+            return &opts[i];
+    }
+    return NULL;
+}
+
+/* `origin` is the argument as the user typed it, quoted back in errors. */
+static bool opts__assign(Opt *o, const char *val, const char *origin) {
+    if (o->type == OPTTYPE_STR) {
+        *(const char **)o->dst = val;
+        return true;
+    }
+
+    char *end;
+    errno = 0;
+    long v = strtol(val, &end, 10);
+    if (end == val || *end != '\0' || errno == ERANGE || v < INT_MIN || v > INT_MAX) {
+        LOG(LOG_ERROR, "opts_parse: '%s' expects an integer, got '%s'", origin, val);
+        return false;
+    }
+    *(int *)o->dst = (int)v;
+    return true;
+}
+
+/* Walks one "-abc" token. Flags chain; the first option that takes a value
+ * consumes whatever follows it, or the next argument when nothing does. */
+static bool opts__parse_short_group(Opt *opts, size_t n_opts, const char *arg,
+                                    int *i, int argc, char **argv) {
+    for (const char *c = arg + 1; *c; ) {
+        char  name  = *c++;
+        Opt  *match = opts__find_short(opts, n_opts, name);
+        if (!match) {
+            LOG(LOG_ERROR, "opts_parse: unknown option '-%c' in '%s'", name, arg);
+            return false;
         }
 
-        if (arg[0] != '-' || arg[1] == '\0') {
-            (*argv)[out++] = arg;
-            i++;
+        if (match->type == OPTTYPE_FLAG) {
+            if (*c == '=') {
+                LOG(LOG_ERROR, "opts_parse: '-%c' takes no argument", name);
+                return false;
+            }
+            *(bool *)match->dst = true;
             continue;
         }
 
-        bool        is_long  = (arg[1] == '-');
-        const char *key      = is_long ? arg + 2 : arg + 1;
+        const char *val;
+        if (*c == '=')   val = c + 1;    /* -o=file */
+        else if (*c)     val = c;        /* -ofile  */
+        else {                           /* -o file */
+            if (++(*i) >= argc) {
+                LOG(LOG_ERROR, "opts_parse: '-%c' requires an argument", name);
+                return false;
+            }
+            val = argv[*i];
+        }
+        return opts__assign(match, val, arg);
+    }
+    return true;
+}
+
+bool opts_parse(Opt *opts, size_t n_opts, int *argc, char ***argv) {
+    char **args = *argv;
+    int    out  = 0;
+
+    for (int i = 0; i < *argc; i++) {
+        char *arg = args[i];
+
+        if (strcmp(arg, "--") == 0) {
+            while (++i < *argc) args[out++] = args[i];
+            break;
+        }
+
+        /* Anything that is not "-x..." is positional, a lone "-" included. */
+        if (arg[0] != '-' || arg[1] == '\0') {
+            args[out++] = arg;
+            continue;
+        }
+
+        if (arg[1] != '-') {
+            if (!opts__parse_short_group(opts, n_opts, arg, &i, *argc, args))
+                return false;
+            continue;
+        }
+
+        const char *key      = arg + 2;
         const char *eq       = strchr(key, '=');
         size_t      key_len  = eq ? (size_t)(eq - key) : strlen(key);
-        const char *attached = eq ? eq + 1 : NULL;
 
-        /* -oVALUE: short opt with value glued to the flag */
-        if (!is_long && !eq && key_len > 1) {
-            key_len  = 1;
-            attached = key + 1;
-        }
-
-        Opt *match = NULL;
-        for (size_t j = 0; j < n_opts; j++) {
-            Opt *o = &opts[j];
-            if (is_long) {
-                if (o->long_name && strlen(o->long_name) == key_len &&
-                    strncmp(o->long_name, key, key_len) == 0) {
-                    match = o; break;
-                }
-            } else {
-                if (o->short_name && o->short_name == key[0]) {
-                    match = o; break;
-                }
-            }
-        }
-
+        Opt *match = opts__find_long(opts, n_opts, key, key_len);
         if (!match) {
             LOG(LOG_ERROR, "opts_parse: unknown option '%s'", arg);
             return false;
         }
 
         if (match->type == OPTTYPE_FLAG) {
-            if (attached) {
-                LOG(LOG_ERROR, "opts_parse: '%s' takes no argument", arg);
+            if (eq) {
+                LOG(LOG_ERROR, "opts_parse: '--%.*s' takes no argument",
+                    (int)key_len, key);
                 return false;
             }
             *(bool *)match->dst = true;
-            i++;
             continue;
         }
 
-        const char *val = attached;
+        const char *val = eq ? eq + 1 : NULL;
         if (!val) {
             if (++i >= *argc) {
                 LOG(LOG_ERROR, "opts_parse: '%s' requires an argument", arg);
                 return false;
             }
-            val = (*argv)[i];
+            val = args[i];
         }
-
-        if (match->type == OPTTYPE_STR) {
-            *(const char **)match->dst = val;
-        } else {
-            char *end;
-            errno = 0;
-            long v = strtol(val, &end, 10);
-            if (*end != '\0' || errno == ERANGE || v < INT_MIN || v > INT_MAX) {
-                LOG(LOG_ERROR, "opts_parse: '%s' expects an integer, got '%s'", arg, val);
-                return false;
-            }
-            *(int *)match->dst = (int)v;
-        }
-        i++;
+        if (!opts__assign(match, val, arg)) return false;
     }
 
     *argc = out;

@@ -57,6 +57,61 @@ TEST(opts_parse_every_supported_form) {
     }
 }
 
+TEST(opts_parse_grouped_short_flags) {
+    bool        a = false, b = false, c = false;
+    const char *output = "default";
+    int         jobs   = 0;
+
+    Opt opts[] = {
+        OPT_FLAG('a', "all",    "a", &a),
+        OPT_FLAG('b', "brief",  "b", &b),
+        OPT_FLAG('c', "colour", "c", &c),
+        OPT_STR ('o', "output", "FILE", "output", &output),
+        OPT_INT ('j', "jobs",   "N",    "jobs",   &jobs),
+    };
+
+    {   /* the whole point: -abc means -a -b -c */
+        ARGV("-abc", "rest.c");
+        CHECK(opts_parse_arr(opts, &argc, &argv));
+        CHECK(a); CHECK(b); CHECK(c);
+        CHECK_INT(argc, 1);
+        CHECK_STR(argv[0], "rest.c");
+    }
+    {   /* a group ending on a value option, value attached */
+        a = b = false; output = "default";
+        ARGV("-abofile.txt");
+        CHECK(opts_parse_arr(opts, &argc, &argv));
+        CHECK(a); CHECK(b);
+        CHECK_STR(output, "file.txt");
+    }
+    {   /* a group ending on a value option, value in the next argument */
+        a = false; jobs = 0;
+        ARGV("-aj", "12");
+        CHECK(opts_parse_arr(opts, &argc, &argv));
+        CHECK(a);
+        CHECK_INT(jobs, 12);
+    }
+    {   /* '=' still works at the end of a group */
+        a = false; output = "default";
+        ARGV("-ao=eq.txt");
+        CHECK(opts_parse_arr(opts, &argc, &argv));
+        CHECK(a);
+        CHECK_STR(output, "eq.txt");
+    }
+    {   /* an unknown letter names itself, not the whole group */
+        ARGV("-azc");
+        CHECK(!opts_parse_arr(opts, &argc, &argv));
+    }
+    {   /* a flag inside a group still refuses a value */
+        ARGV("-ab=1");
+        CHECK(!opts_parse_arr(opts, &argc, &argv));
+    }
+    {   /* a value option at the end of a group with nothing left */
+        ARGV("-ao");
+        CHECK(!opts_parse_arr(opts, &argc, &argv));
+    }
+}
+
 TEST(opts_parse_positionals_and_double_dash) {
     bool verbose = false;
     Opt opts[] = { OPT_FLAG('v', "verbose", "verbose", &verbose) };
@@ -257,6 +312,7 @@ int main(void) {
     log_set_level(LOG_CRITICAL);
     utest_begin("system");
     RUN(opts_parse_every_supported_form);
+    RUN(opts_parse_grouped_short_flags);
     RUN(opts_parse_positionals_and_double_dash);
     RUN(opts_parse_rejects_bad_input);
     RUN(opts_usage_prints_long_names_in_full);
