@@ -65,16 +65,33 @@ int main(int argc, char **argv) {
 ## Building the tests
 
 ```sh
-make test        # native build
-make test-asan   # AddressSanitizer and UndefinedBehaviorSanitizer, leaks on
-make check-c11   # strict -std=c11 -Werror, with and without vector maths
-make test-all    # all of the above
-make examples    # the example programs
+make test            # native build
+make test-asan       # AddressSanitizer and UndefinedBehaviorSanitizer, leaks on
+make check-c11       # strict -std=c11 -Werror, with and without vector maths
+make check-examples  # build and drive the example programs
+make test-all        # all of the above
 ```
 
 The suite is 76 tests over five files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
+
+## Examples
+
+`examples/build.c` is a build tool in one file. It compiles `examples/demo`
+into an executable, skips any step whose output is newer than its inputs, and
+rebuilds when a header changes. It uses the option parser, the filesystem
+layer, the temporary allocator, the command runner and the logger together, so
+it doubles as the integration test that `make check-examples` runs.
+
+```sh
+make examples
+./examples/build -r      # build and run
+./examples/build         # nothing to do
+./examples/build --clean
+```
+
+`examples/cli.c` is a smaller one, showing only the option parsing.
 
 ## Configuration
 

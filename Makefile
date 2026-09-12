@@ -18,7 +18,7 @@ TEST_ASAN:= $(patsubst tests/%.c,tests/run_%_asan,$(TEST_SRC))
 
 SAN = -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
 
-.PHONY: all test test-asan test-all examples check-c11 clean
+.PHONY: all test test-asan test-all examples check-c11 check-examples clean
 
 all: test
 
@@ -52,15 +52,33 @@ check-c11:
 	@rm -f .compile-check.c
 	@echo "strict C11 compile: ok"
 
-test-all: check-c11 test test-asan
+test-all: check-c11 test test-asan check-examples
 
 # --- examples -----------------------------------------------------------------
 
-examples: example_cli
+examples: examples/cli examples/build
 
-example_cli: example_cli.c utils.h
+examples/cli: examples/cli.c utils.h
 	$(CC) $(CFLAGS) $< -o $@
 
+examples/build: examples/build.c utils.h
+	$(CC) $(CFLAGS) $< -o $@
+
+# The example build tool is the integration test: it drives the option parser,
+# the filesystem layer, the temporary allocator, the command runner and the
+# logger at once, which no unit test does. The logger writes to stderr, hence
+# the redirections.
+check-examples: examples/build examples/cli
+	@./examples/build --clean > /dev/null 2>&1
+	@./examples/build -r 2>&1 | grep -q 'hello, world'
+	@./examples/build    2>&1 | grep -q '0 file(s) compiled'
+	@touch examples/demo/greet.h
+	@./examples/build    2>&1 | grep -q '2 file(s) compiled'
+	@./examples/cli --help > /dev/null
+	@./examples/build --clean > /dev/null 2>&1
+	@echo "examples: ok"
+
 clean:
-	rm -f $(TEST_BIN) $(TEST_ASAN) example_cli .compile-check.c
+	rm -f $(TEST_BIN) $(TEST_ASAN) examples/cli examples/build .compile-check.c
+	rm -rf build
 	rm -f utest-tmp-*

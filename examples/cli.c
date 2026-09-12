@@ -1,6 +1,6 @@
 #define UTILS_NO_VEC_MATH
 #define UTILS_IMPLEMENTATION
-#include "utils.h"
+#include "../utils.h"
 
 int main(int argc, char **argv) {
     const char *prog = args_shift(&argc, &argv); /* consomme argv[0] */
