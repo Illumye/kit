@@ -261,7 +261,12 @@ bool read_dir(const char *path, FileList *out);
  *
  *   if (needs_rebuild(exe, srcs, n) != 0) { ... rebuild ... }
  */
-int needs_rebuild(const char *output, const char **inputs, size_t n_inputs);
+int needs_rebuild(const char *output, const char *const *inputs, size_t n_inputs);
+
+/* Same, taking the inputs straight from a FileList, which is what read_dir
+ * fills. Spelling the array as const char *const * is what lets a caller pass
+ * one without a cast that -Wcast-qual then objects to. */
+int needs_rebuild_list(const char *output, const FileList *inputs);
 
 /* Same, for a single input. */
 #define needs_rebuild1(output, input) \
@@ -1565,7 +1570,7 @@ int64_t file_mtime(const char *path) {
     return t.sec;
 }
 
-int needs_rebuild(const char *output, const char **inputs, size_t n_inputs) {
+int needs_rebuild(const char *output, const char *const *inputs, size_t n_inputs) {
     Utils__Mtime out_time;
     if (!utils__mtime(output, &out_time)) return 1;   /* missing: must build */
 
@@ -1582,6 +1587,10 @@ int needs_rebuild(const char *output, const char **inputs, size_t n_inputs) {
         if (in_time.sec  == out_time.sec && in_time.nsec >= out_time.nsec) return 1;
     }
     return 0;
+}
+
+int needs_rebuild_list(const char *output, const FileList *inputs) {
+    return needs_rebuild(output, (const char *const *)inputs->items, inputs->count);
 }
 
 void file_list_free(FileList *list) {
