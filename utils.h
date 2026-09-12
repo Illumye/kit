@@ -596,6 +596,9 @@ bool  hm_delete(HashMap *hm, const char *key);
 /* Returns true if entry `e` is a live (non-deleted) slot. */
 bool  hm_entry_live(const HM_Entry *e);
 
+/* Drops every entry but keeps the allocation, ready for reuse. */
+void  hm_reset(HashMap *hm);
+
 void  hm_free(HashMap *hm);
 
 /* Iterate over live entries.
@@ -1648,6 +1651,12 @@ bool hm_delete(HashMap *hm, const char *key) {
     hm->entries[slot].value = NULL;
     hm->count--;   /* `used` stays: the slot is still occupied by the tombstone */
     return true;
+}
+
+void hm_reset(HashMap *hm) {
+    if (hm->entries) memset(hm->entries, 0, hm->capacity * sizeof(HM_Entry));
+    hm->count = 0;
+    hm->used  = 0;
 }
 
 void hm_free(HashMap *hm) {
