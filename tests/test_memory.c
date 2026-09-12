@@ -11,40 +11,138 @@
 
 TEST(arena_allocates_aligned_zeroed_blocks) {
     Arena a = arena_make(4096);
-    CHECK(a.buffer != NULL);
-    CHECK_INT(a.length, 4096);
-    CHECK_INT(a.offset, 0);
+    CHECK(a.first != NULL);
+    CHECK_INT(arena_used(&a), 0);
+    CHECK_INT(arena_capacity(&a), 4096);
 
     char *one = arena_alloc(&a, 1);
     if (!CHECK(one != NULL)) { arena_free(&a); return; }
     CHECK_INT(one[0], 0);                       /* freshly zeroed */
 
-    /* A one-byte block must not leave the next pointer misaligned. */
+    /* A one-byte block must not leave the next one misaligned. */
     void **ptr = arena_alloc(&a, sizeof(void *));
-    CHECK_INT((uintptr_t)ptr % sizeof(void *), 0);
+    CHECK_INT((uintptr_t)ptr % sizeof(max_align_t), 0);
     CHECK(*ptr == NULL);
 
     int *nums = arena_alloc_array(&a, int, 16);
     if (!CHECK(nums != NULL)) { arena_free(&a); return; }
     for (int i = 0; i < 16; i++) CHECK_INT(nums[i], 0);
-    CHECK(a.offset >= 1 + sizeof(void *) + 16 * sizeof(int));
+    CHECK(arena_used(&a) >= 1 + sizeof(void *) + 16 * sizeof(int));
 
     arena_free(&a);
-    CHECK(a.buffer == NULL);
-    CHECK_INT(a.length, 0);
+    CHECK(a.first == NULL);
+    CHECK_INT(arena_capacity(&a), 0);
 }
 
-TEST(arena_reset_reuses_the_block) {
+TEST(arena_honours_over_alignment) {
+    Arena a = {0};
+    for (size_t align = 1; align <= 256; align *= 2) {
+        arena_alloc(&a, 1);                     /* knock the offset askew */
+        void *p = arena_alloc_aligned(&a, 32, align);
+        if (!CHECK(p != NULL)) break;
+        if (!CHECK((uintptr_t)p % align == 0))
+            printf("      align=%zu gave %p\n", align, p);
+    }
+    arena_free(&a);
+}
+
+/* A zero-initialised arena must work with no preparation at all. */
+TEST(arena_zero_initialised_grows_on_demand) {
+    Arena a = {0};
+    CHECK_INT(arena_capacity(&a), 0);
+
+    char *p = arena_alloc(&a, 10);
+    CHECK(p != NULL);
+    CHECK(arena_capacity(&a) >= ARENA_REGION_SIZE);
+    arena_free(&a);
+}
+
+/* The old arena aborted when full. It must now chain another region, and a
+ * single allocation larger than the region size must still be served. */
+TEST(arena_chains_regions_instead_of_failing) {
+    Arena a = arena_make(1024);
+    CHECK_INT(arena_capacity(&a), 1024);
+
+    char *blocks[64];
+    for (int i = 0; i < 64; i++) {
+        blocks[i] = arena_alloc(&a, 100);       /* 6400 bytes into 1024 */
+        if (!CHECK(blocks[i] != NULL)) break;
+        memset(blocks[i], 'a' + (i % 26), 100);
+    }
+    CHECK(arena_capacity(&a) > 1024);
+
+    /* Earlier blocks must survive the chain growing. */
+    int corrupted = 0;
+    for (int i = 0; i < 64; i++)
+        for (int j = 0; j < 100; j++)
+            if (blocks[i][j] != 'a' + (i % 26)) corrupted++;
+    CHECK_INT(corrupted, 0);
+
+    char *huge = arena_alloc(&a, 100000);       /* bigger than the hint */
+    if (CHECK(huge != NULL)) {
+        memset(huge, 1, 100000);
+        CHECK_INT(huge[99999], 1);
+    }
+    arena_free(&a);
+}
+
+TEST(arena_reset_reuses_the_regions) {
     Arena a = arena_make(1024);
     char *first = arena_alloc(&a, 64);
     memset(first, 'x', 64);
+    for (int i = 0; i < 100; i++) arena_alloc(&a, 100);   /* force a chain */
+    size_t capacity = arena_capacity(&a);
 
     arena_reset(&a);
-    CHECK_INT(a.offset, 0);
+    CHECK_INT(arena_used(&a), 0);
+    CHECK_INT(arena_capacity(&a), capacity);    /* regions kept, not freed */
 
     char *again = arena_alloc(&a, 64);
-    CHECK(again == first);        /* same block handed out again */
-    CHECK_INT(again[0], 0);       /* and re-zeroed */
+    CHECK(again == first);                      /* same block handed out */
+    CHECK_INT(again[0], 0);                     /* and re-zeroed */
+    arena_free(&a);
+}
+
+TEST(arena_mark_and_rewind) {
+    Arena a = arena_make(256);
+
+    char *keep = arena_strdup(&a, "kept");
+    Arena_Mark mark = arena_mark(&a);
+    size_t used_at_mark = arena_used(&a);
+
+    for (int i = 0; i < 50; i++) arena_sprintf(&a, "scratch %d", i);
+    CHECK(arena_used(&a) > used_at_mark);
+
+    arena_rewind(&a, mark);
+    CHECK_INT(arena_used(&a), used_at_mark);
+    CHECK_STR(keep, "kept");                    /* untouched by the rewind */
+
+    /* The reclaimed space is handed out again. */
+    char *reused = arena_alloc(&a, 8);
+    CHECK(arena_used(&a) <= used_at_mark + 8 + sizeof(max_align_t));
+    CHECK(reused != NULL);
+
+    /* A mark taken from an empty arena rewinds everything. */
+    Arena b = {0};
+    Arena_Mark empty = arena_mark(&b);
+    arena_alloc(&b, 100);
+    arena_rewind(&b, empty);
+    CHECK_INT(arena_used(&b), 0);
+
+    arena_free(&a);
+    arena_free(&b);
+}
+
+TEST(arena_string_helpers) {
+    Arena a = {0};
+    CHECK_STR(arena_strdup(&a, "hello"), "hello");
+    CHECK_STR(arena_strdup(&a, ""), "");
+    CHECK_STR(arena_strdup_n(&a, "truncated", 4), "trun");
+    CHECK_STR(arena_sprintf(&a, "%s-%d-%.2f", "x", 42, 1.5), "x-42-1.50");
+
+    /* Longer than a region, to exercise the growth path. */
+    char *big = arena_sprintf(&a, "%0*d", 100000, 7);
+    CHECK_INT(strlen(big), 100000);
     arena_free(&a);
 }
 
@@ -171,7 +269,12 @@ int main(void) {
     log_set_level(LOG_CRITICAL);
     utest_begin("memory");
     RUN(arena_allocates_aligned_zeroed_blocks);
-    RUN(arena_reset_reuses_the_block);
+    RUN(arena_honours_over_alignment);
+    RUN(arena_zero_initialised_grows_on_demand);
+    RUN(arena_chains_regions_instead_of_failing);
+    RUN(arena_reset_reuses_the_regions);
+    RUN(arena_mark_and_rewind);
+    RUN(arena_string_helpers);
     RUN(hm_set_get_delete);
     RUN(hm_on_an_empty_map_is_safe);
     RUN(hm_stores_null_values);

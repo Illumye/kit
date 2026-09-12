@@ -49,6 +49,7 @@
 
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -389,20 +390,74 @@ bool sv_ends_with_cstr(String_View sv, const char *suffix);
  * SECTION 5 : ARENA ALLOCATOR
  * -------------------------------------------------------------------------- */
 
+/* A bump allocator over a chain of regions. Running out of room grows the
+ * chain instead of failing, so the initial size is a hint, not a ceiling.
+ *
+ *   Arena a = {0};                  // grows on demand
+ *   Arena b = arena_make(1 << 20);  // same, with the first region preallocated
+ *
+ * Every allocation is zeroed. Individual blocks are never freed; the whole
+ * arena is reset or released at once. */
+
+#ifndef ARENA_REGION_SIZE
+#define ARENA_REGION_SIZE (64 * 1024)
+#endif
+
+typedef struct Arena_Region Arena_Region;
+struct Arena_Region {
+    Arena_Region *next;
+    size_t        capacity;
+    size_t        used;
+    char          data[];   /* the payload follows the header */
+};
+
 typedef struct {
-    char   *buffer;
-    size_t  length;
-    size_t  offset;
+    Arena_Region *first;
+    Arena_Region *current;
+    size_t        region_size;   /* hint for the regions allocated next */
 } Arena;
 
-Arena  arena_make(size_t size);
-void  *arena_alloc(Arena *a, size_t size);
+/* Preallocates a first region of `size` bytes and uses it as the growth hint.
+ * A zero-initialised Arena behaves identically, minus the preallocation. */
+Arena arena_make(size_t size);
+
+/* Aligned on max_align_t, which suits every standard type. */
+void *arena_alloc(Arena *a, size_t size);
+
+/* For over-aligned types: SIMD vectors, cache-line padding. `align` must be a
+ * power of two. */
+void *arena_alloc_aligned(Arena *a, size_t size, size_t align);
 
 /* Convenience: arena_alloc_array(arena, T, n) allocates n items of type T. */
 #define arena_alloc_array(a, T, n) ((T *)arena_alloc((a), sizeof(T) * (n)))
 
+/* Copies into the arena. The result is NUL-terminated and owned by the arena,
+ * so it must not be freed individually. */
+char *arena_strdup(Arena *a, const char *s);
+char *arena_strdup_n(Arena *a, const char *s, size_t n);
+char *arena_sprintf(Arena *a, const char *fmt, ...) UTILS_PRINTF_FORMAT(2, 3);
+
+/* Bytes handed out, and bytes held. The gap is alignment padding plus the
+ * tail of every region that was left behind when the chain grew. */
+size_t arena_used(const Arena *a);
+size_t arena_capacity(const Arena *a);
+
+/* Frees everything at once but keeps the regions for reuse. */
 void arena_reset(Arena *a);
+
+/* Releases every region back to the allocator. */
 void arena_free(Arena *a);
+
+/* A position in the arena, to roll back to. Taking a mark and rewinding to it
+ * turns the arena into a stack: allocate freely, then release in one step.
+ * A mark is invalidated by arena_reset and arena_free. */
+typedef struct {
+    Arena_Region *region;
+    size_t        used;
+} Arena_Mark;
+
+Arena_Mark arena_mark(const Arena *a);
+void       arena_rewind(Arena *a, Arena_Mark mark);
 
 /* --------------------------------------------------------------------------
  * SECTION 6 : TIME / STOPWATCH
@@ -1351,34 +1406,144 @@ bool sv_ends_with_cstr(String_View sv, const char *suffix) {
  * Arena
  * -------------------------------------------------------------------------- */
 
+/* Regions carry their payload in the same allocation as their header, so a
+ * region costs one malloc. */
+static Arena_Region *arena__new_region(size_t capacity) {
+    if (capacity > SIZE_MAX - sizeof(Arena_Region))
+        PANIC("arena: region of %zu bytes is too large", capacity);
+
+    Arena_Region *r = malloc(sizeof(Arena_Region) + capacity);
+    if (!r) PANIC("arena: malloc of %zu bytes failed", capacity);
+
+    r->next     = NULL;
+    r->capacity = capacity;
+    r->used     = 0;
+    return r;
+}
+
+static void arena__append_region(Arena *a, size_t min_capacity) {
+    size_t hint     = a->region_size ? a->region_size : (size_t)ARENA_REGION_SIZE;
+    size_t capacity = min_capacity > hint ? min_capacity : hint;
+
+    Arena_Region *r = arena__new_region(capacity);
+    if (a->current) a->current->next = r;
+    else            a->first         = r;
+    a->current = r;
+}
+
 Arena arena_make(size_t size) {
-    char *mem = malloc(size);
-    if (!mem) PANIC("arena_make: malloc failed (%zu bytes)", size);
-    return (Arena){ .buffer = mem, .length = size, .offset = 0 };
+    Arena a = { .first = NULL, .current = NULL, .region_size = size };
+    if (size > 0) arena__append_region(&a, size);
+    return a;
+}
+
+void *arena_alloc_aligned(Arena *a, size_t size, size_t align) {
+    if (align == 0 || (align & (align - 1)) != 0)
+        PANIC("arena_alloc_aligned: alignment %zu is not a power of two", align);
+    if (size > SIZE_MAX - align)
+        PANIC("arena_alloc_aligned: request of %zu bytes is too large", size);
+
+    for (;;) {
+        Arena_Region *r = a->current;
+        if (r) {
+            /* Padding is computed from the absolute address, so the alignment
+             * of the region payload itself does not matter. */
+            uintptr_t base = (uintptr_t)(r->data + r->used);
+            size_t    pad  = (size_t)((~base + 1u) & (align - 1));
+
+            if (pad <= r->capacity - r->used &&
+                size <= r->capacity - r->used - pad) {
+                r->used += pad;
+                void *ptr = r->data + r->used;
+                r->used  += size;
+                memset(ptr, 0, size);
+                return ptr;
+            }
+            /* This region is full. Reuse the next one if the chain already
+             * has it, which is what makes arena_reset cheap. */
+            if (r->next) {
+                a->current = r->next;
+                continue;
+            }
+        }
+        arena__append_region(a, size + align);
+    }
 }
 
 void *arena_alloc(Arena *a, size_t size) {
-    /* Align to pointer size. */
-    size_t align   = sizeof(void *);
-    size_t padding = (align - ((uintptr_t)(a->buffer + a->offset) % align)) % align;
-
-    if (a->offset + padding + size > a->length)
-        PANIC("arena_alloc: OOM (capacity=%zu, requested=%zu)", a->length, size);
-
-    a->offset += padding;
-    void *ptr  = a->buffer + a->offset;
-    a->offset += size;
-    memset(ptr, 0, size);
-    return ptr;
+    return arena_alloc_aligned(a, size, sizeof(max_align_t));
 }
 
-void arena_reset(Arena *a) { a->offset = 0; }
+char *arena_strdup_n(Arena *a, const char *s, size_t n) {
+    char *copy = arena_alloc_aligned(a, n + 1, 1);
+    if (n > 0) memcpy(copy, s, n);
+    copy[n] = '\0';
+    return copy;
+}
+
+char *arena_strdup(Arena *a, const char *s) {
+    return arena_strdup_n(a, s, strlen(s));
+}
+
+char *arena_sprintf(Arena *a, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(NULL, 0, fmt, args);
+    va_end(args);
+    if (n < 0) PANIC("arena_sprintf: encoding error");
+
+    char *out = arena_alloc_aligned(a, (size_t)n + 1, 1);
+    va_start(args, fmt);
+    vsnprintf(out, (size_t)n + 1, fmt, args);
+    va_end(args);
+    return out;
+}
+
+size_t arena_used(const Arena *a) {
+    size_t total = 0;
+    for (const Arena_Region *r = a->first; r; r = r->next) {
+        total += r->used;
+        if (r == a->current) break;   /* regions past current are not in use */
+    }
+    return total;
+}
+
+size_t arena_capacity(const Arena *a) {
+    size_t total = 0;
+    for (const Arena_Region *r = a->first; r; r = r->next) total += r->capacity;
+    return total;
+}
+
+void arena_reset(Arena *a) {
+    for (Arena_Region *r = a->first; r; r = r->next) r->used = 0;
+    a->current = a->first;
+}
 
 void arena_free(Arena *a) {
-    free(a->buffer);
-    a->buffer = NULL;
-    a->offset = 0;
-    a->length = 0;
+    Arena_Region *r = a->first;
+    while (r) {
+        Arena_Region *next = r->next;
+        free(r);
+        r = next;
+    }
+    a->first       = NULL;
+    a->current     = NULL;
+    a->region_size = 0;
+}
+
+Arena_Mark arena_mark(const Arena *a) {
+    Arena_Mark m = { .region = a->current, .used = a->current ? a->current->used : 0 };
+    return m;
+}
+
+void arena_rewind(Arena *a, Arena_Mark mark) {
+    if (!mark.region) {
+        arena_reset(a);
+        return;
+    }
+    mark.region->used = mark.used;
+    for (Arena_Region *r = mark.region->next; r; r = r->next) r->used = 0;
+    a->current = mark.region;
 }
 
 /* --------------------------------------------------------------------------
