@@ -48,10 +48,15 @@
 #    define UTEST__ISATTY() (isatty(fileno(stdout)) != 0)
 #endif
 
+/* The framework defines more helpers than any single suite calls, which is the
+ * point of a framework and not a defect. */
 #if defined(__GNUC__) || defined(__clang__)
 #    define UTEST__UNUSED __attribute__((unused))
 #else
 #    define UTEST__UNUSED
+#    ifdef _MSC_VER
+#        pragma warning(disable : 4505)   /* unreferenced local function removed */
+#    endif
 #endif
 
 /* A sanitized build runs several times slower, so any test that asserts on a
