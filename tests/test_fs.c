@@ -15,6 +15,19 @@ static void write_text(const char *path, const char *text) {
     kit_fs_write(path, text, strlen(text), NULL);
 }
 
+/* File timestamps do not advance continuously: Windows moves them by about
+ * 15 ms at a time, so two writes in a row can carry the same date and
+ * kit_fs_stale rightly answers "rebuild". A test about ordering has to let the
+ * clock move between the two writes. */
+static void wait_for_the_clock(void) {
+#ifdef _WIN32
+    Sleep(50);
+#else
+    struct timespec pause = { 0, 50 * 1000 * 1000 };
+    nanosleep(&pause, NULL);
+#endif
+}
+
 static char *join(const char *a, const char *b) {
     static char buf[512];
     return kit_path_join(buf, sizeof(buf), a, b);
@@ -263,13 +276,14 @@ TEST(fs_stale_tracks_staleness) {
     remove(out);
     CHECK_INT(kit_fs_stale(out, inputs, 2, NULL), 1);
 
-    /* Built after its inputs: up to date. Sub-second resolution is exactly
-     * what this checks, so nothing sleeps here. */
+    /* Built after its inputs: up to date. */
+    wait_for_the_clock();
     write_text(out, "built");
     CHECK_INT(kit_fs_stale(out, inputs, 2, NULL), 0);
     CHECK_INT(kit_fs_stale1(out, in1, NULL), 0);
 
     /* Touching one input makes it stale again. */
+    wait_for_the_clock();
     write_text(in2, "two modified");
     CHECK_INT(kit_fs_stale(out, inputs, 2, NULL), 1);
     CHECK_INT(kit_fs_stale1(out, in2, NULL), 1);
