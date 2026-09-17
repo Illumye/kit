@@ -579,8 +579,10 @@ static inline int kit_fs_stale1(const char *output, const char *input, KitError 
  * Example:
  *   kit_array_each(int, x, &my_array) { printf("%d\n", *x); }
  */
-#define kit_array_each(Type, it, da) \
-    for (Type *it = (da)->items; it < (da)->items + (da)->count; ++it)
+#define kit_array_each(Type, it, da)                            \
+    for (Type *it = (da)->items;                                 \
+         (da)->items != NULL && it < (da)->items + (da)->count;  \
+         ++it)
 
 /* Linear search writing the index of the first match into `out_index`, or
  * (da)->count when there is none. Portable everywhere, unlike
@@ -1132,9 +1134,10 @@ void  kit_map_free(KitMap *hm);
  * Example:
  *   kit_map_each(&hm, e) { printf("%s -> %p\n", e->key, e->value); }
  */
-#define kit_map_each(hm, it)                            \
-    for (KitMapEntry *(it) = (hm)->entries;             \
-         (it) < (hm)->entries + (hm)->capacity; ++(it)) \
+#define kit_map_each(hm, it)                                             \
+    for (KitMapEntry *(it) = (hm)->entries;                              \
+         (hm)->entries != NULL && (it) < (hm)->entries + (hm)->capacity; \
+         ++(it))                                                         \
         if (kit_map_entry_live(it))
 
 /* --------------------------------------------------------------------------
@@ -2324,7 +2327,9 @@ KitStr kit_str_from(const char *cstr) {
 }
 
 KitStr kit_str_from_parts(const char *data, size_t count) {
-    KitStr sv = { data, count };
+    /* Never a view over a null pointer: "data + 0" is undefined on one, and
+     * every function below does that arithmetic. */
+    KitStr sv = { data ? data : "", count };
     return sv;
 }
 
