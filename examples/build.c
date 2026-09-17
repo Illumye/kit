@@ -75,10 +75,10 @@ static bool compile(char *source, const char *object,
     KitCommand cmd = {0};
     kit_command_push_all(&cmd, "cc", "-std=c11", "-Wall", "-Wextra", "-I", SRC_DIR,
                "-c", source, "-o", object, NULL);
-    bool ok = kit_command_run(&cmd, NULL);
+    bool ok = kit_command_run(&cmd, err);
     kit_command_free(&cmd);
 
-    if (!ok) return kit_error_set(err, KIT_ERR_PROCESS, "the compiler failed");
+    if (!ok) return false;
     (*compiled)++;
     return true;
 }
@@ -94,9 +94,9 @@ static bool link_target(const KitFileList *objects, KitError *err) {
     KitCommand cmd = {0};
     kit_command_push_all(&cmd, "cc", "-o", TARGET, NULL);
     for (size_t i = 0; i < objects->count; ++i) kit_command_push(&cmd, objects->items[i]);
-    bool ok = kit_command_run(&cmd, NULL);
+    bool ok = kit_command_run(&cmd, err);
     kit_command_free(&cmd);
-    return ok ? true : kit_error_set(err, KIT_ERR_PROCESS, "the linker failed");
+    return ok;
 }
 
 static bool clean(KitError *err) {
@@ -179,9 +179,14 @@ int main(int argc, char **argv) {
     }
     KIT_INFO("%s ready (%zu file(s) compiled)", TARGET, compiled);
 
-    if (run && !kit_command_run_args(TARGET, NULL)) {
-        kit_error_set(&err, KIT_ERR_PROCESS, "%s exited with a failure", TARGET);
-        goto done;
+    if (run) {
+        /* A KitCommand rather than the shorthand, because the failure of the
+         * program we just built is worth reporting properly. */
+        KitCommand target = KIT_ZEROED;
+        kit_command_push(&target, TARGET);
+        bool ran = kit_command_run(&target, &err);
+        kit_command_free(&target);
+        if (!ran) goto done;
     }
     status = 0;
 
