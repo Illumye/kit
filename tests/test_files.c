@@ -320,8 +320,10 @@ TEST(array_append_many_and_remove) {
     kit_array_swap_remove(&a, 0);    /* last element takes the hole */
     CHECK_INT(a.count, 3);
     CHECK_INT(a.items[0], 40);
+#ifdef kit_array_contains          /* absent where GNU statement expressions are */
     CHECK(kit_array_contains(&a, 20));
     CHECK(!kit_array_contains(&a, 10));
+#endif
 
     /* The portable counterpart reports the position, count when absent. */
     size_t at;
