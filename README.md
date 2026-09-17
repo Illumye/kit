@@ -23,6 +23,9 @@ other library, or any project's own `read_file` and `LOG`, without a clash.
 | Constants, enumerators, other macros | `KIT_NAME` | `KIT_LOG_ERROR` |
 | Internals | `kit__` or `KIT__` | `kit__log` |
 
+`make check-namespace` enforces it: it fails the build if a macro, a symbol, a
+type or an enumerator appears without the prefix.
+
 Coming from `utils.h`? [MIGRATION.md](MIGRATION.md) maps every old name to its
 new one.
 
@@ -83,6 +86,7 @@ int main(int argc, char **argv) {
 make test            # native build
 make test-asan       # AddressSanitizer and UndefinedBehaviorSanitizer, leaks on
 make check-c11       # strict -std=c11 -Werror, with and without vector maths
+make check-namespace # nothing unprefixed leaks, and common names still coexist
 make check-cxx       # the same header from C++17, implementation included
 make check-examples  # build and drive the example programs
 make test-all        # all of the above

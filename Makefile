@@ -32,7 +32,7 @@ MINGW    ?= x86_64-w64-mingw32-gcc
 WINE     ?= wine
 WIN_BIN  := $(patsubst tests/%.c,tests/win_%.exe,$(TEST_SRC))
 
-.PHONY: all test test-asan test-all examples check-c11 check-cxx \
+.PHONY: all test test-asan test-all examples check-c11 check-namespace check-cxx \
         check-examples check-windows fuzz fuzz-build clean
 
 all: test
@@ -67,7 +67,18 @@ check-c11:
 	@rm -f .compile-check.c
 	@echo "strict C11 compile: ok"
 
-test-all: check-c11 check-cxx test test-asan check-examples
+test-all: check-c11 check-namespace check-cxx test test-asan check-examples
+
+# --- namespace -----------------------------------------------------------------
+# Two sides of the same promise. check_namespace.sh fails if the header adds a
+# macro, symbol, type or enumerator without the kit prefix. check_coexistence.c
+# defines the names a real project already uses, next to syslog.h, and has to
+# compile: the old unprefixed header produced 22 errors on it.
+
+check-namespace:
+	@CC=$(CC) ./tests/check_namespace.sh kit.h
+	@$(CC) -std=c11 $(WARNINGS) -Werror tests/check_coexistence.c -o tests/run_coexistence $(LDLIBS)
+	@./tests/run_coexistence && echo "coexistence: ok"
 
 # --- C++ ---------------------------------------------------------------------
 # The header has to be usable from C++ with the implementation included, not
@@ -135,7 +146,7 @@ check-examples: examples/build examples/cli
 	@echo "examples: ok"
 
 clean:
-	rm -f $(TEST_BIN) $(TEST_ASAN) $(WIN_BIN) $(FUZZ_BIN) tests/run_test_cxx \
+	rm -f $(TEST_BIN) $(TEST_ASAN) $(WIN_BIN) $(FUZZ_BIN) tests/run_test_cxx tests/run_coexistence \
 	      examples/cli examples/build .compile-check.c .cxx-check.cpp
 	rm -rf build
 	rm -rf utest-tmp-*
