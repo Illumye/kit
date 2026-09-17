@@ -677,8 +677,17 @@ KitStr kit_str_take_right(KitStr *sv, size_t n);
 bool kit_str_next(KitStr *sv, char delim, KitStr *out);
 
 /* Strict numeric parsing: the entire view must be consumed, leading and
- * trailing spaces included, or the call fails and *out is untouched.
- * Overflow is a failure, not a saturation. */
+ * trailing spaces included, or the call returns false and *out is untouched.
+ * Overflow is refused rather than saturated.
+ *
+ * These take no KitError and never log: "is this a number?" is a question,
+ * and a no is an answer rather than a failure. A caller that is parsing a
+ * file, where a no does mean a failure, has the context the message needs:
+ *
+ *   if (!kit_str_to_i64(field, &n))
+ *       return kit_error_set(err, KIT_ERR_INVALID,
+ *                            "line %d: expected an integer, got '" KIT_STR_FMT "'",
+ *                            line, KIT_STR_ARG(field)); */
 bool kit_str_to_i64(KitStr sv, int64_t *out);
 bool kit_str_to_u64(KitStr sv, uint64_t *out);
 bool kit_str_to_double(KitStr sv, double *out);
@@ -878,7 +887,7 @@ char *kit_cli_shift(int *argc, char ***argv);
  *       KIT_CLI_STR ('o', "output",  "FILE", "Output file",   &output),
  *       KIT_CLI_INT ('n', "count",   "N",    "Iterations",    &count),
  *   };
- *   if (!kit_cli_parse_arr(opts, &argc, &argv)) return 1;
+ *   if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) return 1;
  *
  * Supported forms:
  *   -v            flag
@@ -907,16 +916,21 @@ typedef struct {
 #define KIT_CLI_STR( s, l, meta, help, dst) { (s), (l), KIT_CLI_OPT_STR,  (meta),(help), (dst) }
 #define KIT_CLI_INT( s, l, meta, help, dst) { (s), (l), KIT_CLI_OPT_INT,  (meta),(help), (dst) }
 
-/* Parse options in place. An unknown option or a missing value is logged and
- * returns false. After the call, argc and argv hold only the positional
- * arguments. */
-bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv);
+/* Parse options in place. After the call, argc and argv hold only the
+ * positional arguments.
+ *
+ * A malformed command line is KIT_ERR_INVALID, with a message meant to be
+ * shown to whoever typed it: "unknown option '--verbse'". Passing NULL logs
+ * it instead, which is what a program that prints its usage and exits wants.
+ */
+bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv,
+                   KitError *err);
 
 /* Print a formatted option summary to fp. */
 void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t n_opts);
 
-#define kit_cli_parse_arr(opts, argc, argv) \
-    kit_cli_parse((opts), KIT_COUNTOF(opts), (argc), (argv))
+#define kit_cli_parse_arr(opts, argc, argv, err) \
+    kit_cli_parse((opts), KIT_COUNTOF(opts), (argc), (argv), (err))
 #define kit_cli_usage_arr(fp, prog, opts) \
     kit_cli_usage((fp), (prog), (opts), KIT_COUNTOF(opts))
 
@@ -949,12 +963,14 @@ void kit_buf_free(KitBuf *sb);
  * SECTION 11 : PROCESSES
  *
  * A KitCommand is an argument list; running it gives a KitProcess.
- *   kit_command_run(c)          synchronous, inherits stdout and stderr
- *   kit_command_spawn(c)        asynchronous, returns a KitProcess to wait on
- *   kit_command_capture(c, b)   synchronous, collects stdout into a KitBuf
+ *   kit_command_run(c, err)          synchronous, inherits stdout and stderr
+ *   kit_command_spawn(c, err)        asynchronous, returns a KitProcess
+ *   kit_command_capture(c, b, err)   synchronous, collects stdout into a KitBuf
  *
- * Variadic shorthand, NULL-terminated:
- *   kit_command_run_args("cc", "-o", "out", "main.c", NULL)
+ * Failures come back as KitError, as everywhere else: a command that cannot
+ * be started is reported with the reason the system gave, KIT_ERR_NOT_FOUND
+ * for a missing program, and one that ran and failed is KIT_ERR_PROCESS with
+ * its exit status in native.
  * -------------------------------------------------------------------------- */
 
 typedef struct {
@@ -977,38 +993,48 @@ void kit_command_push(KitCommand *c, const char *arg);
 /* Append multiple arguments at once (NULL-terminated varargs). */
 void kit_command_push_all(KitCommand *c, ...);
 
-/* Run synchronously. Returns false on failure. */
-bool kit_command_run(KitCommand *c);
+/* Run synchronously and wait for the result. */
+bool kit_command_run(KitCommand *c, KitError *err);
 
-/* Run asynchronously. Returns the child process, or KIT_PROCESS_INVALID on
- * error. Call kit_process_wait to reap it. The KitCommand is NOT reset. */
-KitProcess kit_command_spawn(KitCommand *c);
+/* Run asynchronously. Returns the child process, or KIT_PROCESS_INVALID if it
+ * could not be started, which is reported before this returns rather than
+ * later as a mysterious exit status. Call kit_process_wait to reap it. The
+ * KitCommand is NOT reset. */
+KitProcess kit_command_spawn(KitCommand *c, KitError *err);
 
-/* Wait for an async process. Returns false if the child exited non-zero. */
-bool kit_process_wait(KitProcess p);
+/* Wait for a process started by kit_command_spawn. A child that exits
+ * non-zero, or dies on a signal, is KIT_ERR_PROCESS. */
+bool kit_process_wait(KitProcess p, KitError *err);
 
 /* Run synchronously and capture the child's output.
  *
  *   kit_command_capture         stdout only; stderr passes through
  *   kit_command_capture_merged  both streams interleaved, as a terminal shows
- *   kit_command_capture_split   each stream into its own builder
+ *   kit_command_capture_split   each stream into its own buffer
  *
- * kit_command_capture_split takes either builder as NULL, in which case that
- * stream is left alone and passes through. Passing the same builder for both
+ * kit_command_capture_split takes either buffer as NULL, in which case that
+ * stream is left alone and passes through. Passing the same buffer for both
  * is the same as kit_command_capture_merged.
  *
  * Two pipes are drained together rather than one after the other: reading
  * them in sequence deadlocks as soon as the child fills the one nobody is
  * reading, and 64 KiB of diagnostics is not a rare thing for a compiler.
  *
- * All three return false when the child fails to start or exits non-zero.
- * Whatever it managed to write is still appended. */
-bool kit_command_capture(KitCommand *c, KitBuf *sb);
-bool kit_command_capture_merged(KitCommand *c, KitBuf *sb);
-bool kit_command_capture_split(KitCommand *c, KitBuf *out, KitBuf *err);
+ * All three fail when the child cannot be started or exits non-zero. Whatever
+ * it managed to write is still appended, which is the point: a caller quotes
+ * the captured stderr next to the error it just received. */
+bool kit_command_capture(KitCommand *c, KitBuf *out, KitError *err);
+bool kit_command_capture_merged(KitCommand *c, KitBuf *out, KitError *err);
+bool kit_command_capture_split(KitCommand *c, KitBuf *out, KitBuf *errors,
+                               KitError *err);
 
-/* Variadic shorthand, terminated by NULL.
- * kit_command_run_args("ls", "-la", NULL); */
+/* Variadic shorthand, terminated by NULL:
+ *
+ *   kit_command_run_args("ls", "-la", NULL);
+ *
+ * The one function here that cannot take a KitError, since varargs must come
+ * last, so it behaves as if given NULL and logs what went wrong. Build the
+ * KitCommand yourself when the failure matters. */
 bool kit_command_run_args(const char *first, ...);
 
 /* Clears the arguments but keeps the allocation, to reuse the KitCommand. */
@@ -1402,6 +1428,17 @@ static bool kit__error_record(KitError *err, KitErrorCode code, int native,
     if (target->truncated) kit__error_mark_cut(target);
 
     if (!err) kit__log(KIT_LOG_ERROR, __FILE__, __LINE__, "%s", target->message);
+    return false;
+}
+
+/* kit_error_set with the platform's own value kept in native: an exit status,
+ * a signal number. */
+static bool kit__error_set_native(KitError *err, KitErrorCode code, int native,
+                                  const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    kit__error_record(err, code, native, NULL, fmt, ap);
+    va_end(ap);
     return false;
 }
 
@@ -2614,7 +2651,8 @@ static KitCliOpt *kit__cli_find_long(KitCliOpt *opts, size_t n_opts, const char 
 }
 
 /* `origin` is the argument as the user typed it, quoted back in errors. */
-static bool kit__cli_assign(KitCliOpt *o, const char *val, const char *origin) {
+static bool kit__cli_assign(KitCliOpt *o, const char *val, const char *origin,
+                            KitError *err) {
     if (o->type == KIT_CLI_OPT_STR) {
         *(const char **)o->dst = val;
         return true;
@@ -2624,8 +2662,8 @@ static bool kit__cli_assign(KitCliOpt *o, const char *val, const char *origin) {
     errno = 0;
     long v = strtol(val, &end, 10);
     if (end == val || *end != '\0' || errno == ERANGE || v < INT_MIN || v > INT_MAX) {
-        KIT_ERROR("kit_cli_parse: '%s' expects an integer, got '%s'", origin, val);
-        return false;
+        return kit_error_set(err, KIT_ERR_INVALID,
+                             "'%s' expects an integer, got '%s'", origin, val);
     }
     *(int *)o->dst = (int)v;
     return true;
@@ -2634,19 +2672,19 @@ static bool kit__cli_assign(KitCliOpt *o, const char *val, const char *origin) {
 /* Walks one "-abc" token. Flags chain; the first option that takes a value
  * consumes whatever follows it, or the next argument when nothing does. */
 static bool kit__cli_parse_short_group(KitCliOpt *opts, size_t n_opts, const char *arg,
-                                    int *i, int argc, char **argv) {
+                                       int *i, int argc, char **argv, KitError *err) {
     for (const char *c = arg + 1; *c; ) {
         char  name  = *c++;
         KitCliOpt  *match = kit__cli_find_short(opts, n_opts, name);
         if (!match) {
-            KIT_ERROR("kit_cli_parse: unknown option '-%c' in '%s'", name, arg);
-            return false;
+            return kit_error_set(err, KIT_ERR_INVALID,
+                                 "unknown option '-%c' in '%s'", name, arg);
         }
 
         if (match->type == KIT_CLI_OPT_FLAG) {
             if (*c == '=') {
-                KIT_ERROR("kit_cli_parse: '-%c' takes no argument", name);
-                return false;
+                return kit_error_set(err, KIT_ERR_INVALID,
+                                     "'-%c' takes no argument", name);
             }
             *(bool *)match->dst = true;
             continue;
@@ -2657,17 +2695,18 @@ static bool kit__cli_parse_short_group(KitCliOpt *opts, size_t n_opts, const cha
         else if (*c)     val = c;        /* -ofile  */
         else {                           /* -o file */
             if (++(*i) >= argc) {
-                KIT_ERROR("kit_cli_parse: '-%c' requires an argument", name);
-                return false;
+                return kit_error_set(err, KIT_ERR_INVALID,
+                                     "'-%c' requires an argument", name);
             }
             val = argv[*i];
         }
-        return kit__cli_assign(match, val, arg);
+        return kit__cli_assign(match, val, arg, err);
     }
     return true;
 }
 
-bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv) {
+bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv,
+                   KitError *err) {
     char **args = *argv;
     int    out  = 0;
 
@@ -2686,7 +2725,7 @@ bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv) {
         }
 
         if (arg[1] != '-') {
-            if (!kit__cli_parse_short_group(opts, n_opts, arg, &i, *argc, args))
+            if (!kit__cli_parse_short_group(opts, n_opts, arg, &i, *argc, args, err))
                 return false;
             continue;
         }
@@ -2697,15 +2736,13 @@ bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv) {
 
         KitCliOpt *match = kit__cli_find_long(opts, n_opts, key, key_len);
         if (!match) {
-            KIT_ERROR("kit_cli_parse: unknown option '%s'", arg);
-            return false;
+            return kit_error_set(err, KIT_ERR_INVALID, "unknown option '%s'", arg);
         }
 
         if (match->type == KIT_CLI_OPT_FLAG) {
             if (eq) {
-                KIT_ERROR("kit_cli_parse: '--%.*s' takes no argument",
-                    (int)key_len, key);
-                return false;
+                return kit_error_set(err, KIT_ERR_INVALID,
+                                     "'--%.*s' takes no argument", (int)key_len, key);
             }
             *(bool *)match->dst = true;
             continue;
@@ -2714,12 +2751,12 @@ bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv) {
         const char *val = eq ? eq + 1 : NULL;
         if (!val) {
             if (++i >= *argc) {
-                KIT_ERROR("kit_cli_parse: '%s' requires an argument", arg);
-                return false;
+                return kit_error_set(err, KIT_ERR_INVALID,
+                                     "'%s' requires an argument", arg);
             }
             val = args[i];
         }
-        if (!kit__cli_assign(match, val, arg)) return false;
+        if (!kit__cli_assign(match, val, arg, err)) return false;
     }
 
     *argc = out;
@@ -2869,7 +2906,11 @@ static char *kit__cmd_to_cmdline(KitCommand *c) {
     return kit_buf_cstr(&sb);
 }
 
-KitProcess kit_command_spawn(KitCommand *c) {
+KitProcess kit_command_spawn(KitCommand *c, KitError *err) {
+    if (c->count == 0) {
+        kit_error_set(err, KIT_ERR_INVALID, "cannot run an empty command");
+        return KIT_PROCESS_INVALID;
+    }
     kit__cmd_log(c);
     char *cmdline = kit__cmd_to_cmdline(c);
 
@@ -2880,7 +2921,7 @@ KitProcess kit_command_spawn(KitCommand *c) {
 
     if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0,
                         NULL, NULL, &si, &pi)) {
-        KIT_ERROR("kit_command_spawn: CreateProcess failed (err=%lu)", GetLastError());
+        kit__error_os(err, "cannot run '%s'", c->items[0]);
         free(cmdline);
         return KIT_PROCESS_INVALID;
     }
@@ -2889,43 +2930,51 @@ KitProcess kit_command_spawn(KitCommand *c) {
     return pi.hProcess;
 }
 
-bool kit_process_wait(KitProcess p) {
-    if (p == KIT_PROCESS_INVALID) return false;
-    WaitForSingleObject(p, INFINITE);
-    DWORD exit_code;
-    GetExitCodeProcess(p, &exit_code);
-    CloseHandle(p);
-    if (exit_code != 0) {
-        KIT_ERROR("kit_process_wait: process exited with code %lu", exit_code);
+bool kit_process_wait(KitProcess p, KitError *err) {
+    if (p == KIT_PROCESS_INVALID)
+        return kit_error_set(err, KIT_ERR_INVALID, "no process to wait for");
+
+    if (WaitForSingleObject(p, INFINITE) == WAIT_FAILED) {
+        kit__error_os(err, "cannot wait for the process");
+        CloseHandle(p);
         return false;
     }
-    return true;
+
+    DWORD exit_code = 0;
+    bool  known = GetExitCodeProcess(p, &exit_code) != 0;
+    CloseHandle(p);
+
+    if (!known) return kit_error_set(err, KIT_ERR_PROCESS, "the process ended unexpectedly");
+    if (exit_code == 0) return true;
+    return kit__error_set_native(err, KIT_ERR_PROCESS, (int)exit_code,
+                                 "the process exited with code %lu",
+                                 (unsigned long)exit_code);
 }
 
 /* Windows has no poll for anonymous pipes, so the two are polled with
  * PeekNamedPipe. Blocking on a ReadFile from one while the child fills the
  * other is the deadlock this avoids; the millisecond of sleep is what keeps
  * the loop from spinning a core while the child thinks. */
-static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *err) {
-    bool merged   = (out != NULL && out == err);
+static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *errors,
+                             KitError *err) {
+    bool merged   = (out != NULL && out == errors);
     bool need_out = (out != NULL);
-    bool need_err = (err != NULL && !merged);
+    bool need_err = (errors != NULL && !merged);
 
     SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
     HANDLE out_r = NULL, out_w = NULL, err_r = NULL, err_w = NULL;
 
     if (need_out) {
         if (!CreatePipe(&out_r, &out_w, &sa, 0)) {
-            KIT_ERROR("kit_command_capture: CreatePipe failed (err=%lu)", GetLastError());
-            return false;
+            return kit__error_os(err, "cannot create a pipe");
         }
         SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
     }
     if (need_err) {
         if (!CreatePipe(&err_r, &err_w, &sa, 0)) {
-            KIT_ERROR("kit_command_capture: CreatePipe failed (err=%lu)", GetLastError());
+            DWORD cause = GetLastError();
             if (out_r) { CloseHandle(out_r); CloseHandle(out_w); }
-            return false;
+            return kit__error_win32(err, cause, "cannot create a pipe");
         }
         SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);
     }
@@ -2951,10 +3000,10 @@ static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *err) {
     if (err_w) CloseHandle(err_w);
 
     if (!started) {
-        KIT_ERROR("kit_command_capture: CreateProcess failed (err=%lu)", GetLastError());
+        DWORD cause = GetLastError();
         if (out_r) CloseHandle(out_r);
         if (err_r) CloseHandle(err_r);
-        return false;
+        return kit__error_win32(err, cause, "cannot run '%s'", c->items[0]);
     }
     CloseHandle(pi.hThread);
 
@@ -2962,7 +3011,7 @@ static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *err) {
     KitBuf *sinks[2];
     int            n = 0;
     if (need_out) { handles[n] = out_r; sinks[n] = out; n++; }
-    if (need_err) { handles[n] = err_r; sinks[n] = err; n++; }
+    if (need_err) { handles[n] = err_r; sinks[n] = errors; n++; }
 
     char buf[4096];
     int  still_open = n;
@@ -2996,13 +3045,46 @@ static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *err) {
         if (!progress && still_open > 0) Sleep(1);
     }
 
-    return kit_process_wait(pi.hProcess);
+    return kit_process_wait(pi.hProcess, err);
 }
 
 #else /* POSIX */
 
-KitProcess kit_command_spawn(KitCommand *c) {
+/* A close-on-exec pipe carries the reason exec failed back to the parent.
+ * Without it the child can only exit with a status, and "exited with code 127"
+ * is a poor answer to "cc is not installed". The pipe closes itself on a
+ * successful exec, which is how the parent tells the two apart. */
+static bool kit__spawn_pipe(int fds[2], KitError *err) {
+    if (pipe(fds) < 0) return kit_error_errno(err, errno, "cannot create a pipe");
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    return true;
+}
+
+/* In the parent: the child's errno, or 0 when exec went through. */
+static int kit__spawn_error(int read_fd) {
+    int     cause = 0;
+    ssize_t n;
+    do { n = read(read_fd, &cause, sizeof(cause)); } while (n < 0 && errno == EINTR);
+    return (n == (ssize_t)sizeof(cause)) ? cause : 0;
+}
+
+/* In the child, where only async-signal-safe calls are allowed. */
+static void kit__spawn_failed(int write_fd, int cause) {
+    ssize_t ignored = write(write_fd, &cause, sizeof(cause));
+    (void)ignored;
+    _exit(127);
+}
+
+KitProcess kit_command_spawn(KitCommand *c, KitError *err) {
+    if (c->count == 0) {
+        kit_error_set(err, KIT_ERR_INVALID, "cannot run an empty command");
+        return KIT_PROCESS_INVALID;
+    }
     kit__cmd_log(c);
+
+    int fail[2];
+    if (!kit__spawn_pipe(fail, err)) return KIT_PROCESS_INVALID;
 
     /* execvp needs a NULL sentinel, appended for the duration of the call. */
     kit_array_push(c, NULL);
@@ -3010,63 +3092,80 @@ KitProcess kit_command_spawn(KitCommand *c) {
     c->count--;   /* remove the sentinel regardless of outcome */
 
     if (pid < 0) {
-        KIT_ERROR("kit_command_spawn: fork failed: %s", strerror(errno));
+        int cause = errno;
+        close(fail[0]);
+        close(fail[1]);
+        kit_error_errno(err, cause, "cannot fork to run '%s'", c->items[0]);
         return KIT_PROCESS_INVALID;
     }
     if (pid == 0) {
+        close(fail[0]);
         execvp(c->items[0], (char *const *)(void *)c->items);
-        /* fprintf on a shared FILE* is unsafe after fork - use dprintf */
-        if (KIT_LOG_ERROR >= KIT__MIN_LEVEL)
-            dprintf(STDERR_FILENO, "kit_command_spawn: execvp '%s' failed: %s\n",
-                    c->items[0], strerror(errno));
-        _exit(127);
+        kit__spawn_failed(fail[1], errno);
+    }
+
+    close(fail[1]);
+    int cause = kit__spawn_error(fail[0]);
+    close(fail[0]);
+
+    if (cause != 0) {
+        int status;                       /* the child is already gone: reap it */
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
+        kit_error_errno(err, cause, "cannot run '%s'", c->items[0]);
+        return KIT_PROCESS_INVALID;
     }
     return pid;
 }
 
-bool kit_process_wait(KitProcess p) {
-    if (p == KIT_PROCESS_INVALID) return false;
+bool kit_process_wait(KitProcess p, KitError *err) {
+    if (p == KIT_PROCESS_INVALID)
+        return kit_error_set(err, KIT_ERR_INVALID, "no process to wait for");
+
     int status;
-    if (waitpid(p, &status, 0) < 0) {
-        KIT_ERROR("kit_process_wait: waitpid failed: %s", strerror(errno));
-        return false;
+    while (waitpid(p, &status, 0) < 0) {
+        if (errno == EINTR) continue;
+        return kit_error_errno(err, errno, "cannot wait for the process");
     }
+
     if (WIFEXITED(status)) {
         int code = WEXITSTATUS(status);
-        if (code != 0) {
-            KIT_ERROR("kit_process_wait: process exited with code %d", code);
-            return false;
-        }
-        return true;
+        if (code == 0) return true;
+        return kit__error_set_native(err, KIT_ERR_PROCESS, code,
+                                     "the process exited with code %d", code);
     }
     if (WIFSIGNALED(status)) {
-        KIT_ERROR("kit_process_wait: process killed by signal %d", WTERMSIG(status));
-        return false;
+        int sig = WTERMSIG(status);
+        return kit__error_set_native(err, KIT_ERR_PROCESS, sig,
+                                     "the process was killed by signal %d", sig);
     }
-    KIT_ERROR("kit_process_wait: process ended unexpectedly");
-    return false;
+    return kit_error_set(err, KIT_ERR_PROCESS, "the process ended unexpectedly");
 }
 
-/* One pipe carries both streams when they are merged, so the child can never
- * block on a full pipe that the parent is not reading. */
 /* Both pipes are drained by one poll loop. Reading them in sequence would
  * deadlock the moment the child fills the one nobody is reading, and a
  * compiler emitting a wall of warnings does exactly that. */
-static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *err) {
-    bool merged   = (out != NULL && out == err);
+static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *errors,
+                             KitError *err) {
+    bool merged   = (out != NULL && out == errors);
     bool need_out = (out != NULL);
-    bool need_err = (err != NULL && !merged);
+    bool need_err = (errors != NULL && !merged);
 
     int op[2] = { -1, -1 };
     int ep[2] = { -1, -1 };
 
-    if (need_out && pipe(op) < 0) {
-        KIT_ERROR("kit_command_capture: pipe failed: %s", strerror(errno));
-        return false;
-    }
+    if (need_out && pipe(op) < 0) return kit_error_errno(err, errno, "cannot create a pipe");
     if (need_err && pipe(ep) < 0) {
-        KIT_ERROR("kit_command_capture: pipe failed: %s", strerror(errno));
+        int cause = errno;
         if (op[0] >= 0) { close(op[0]); close(op[1]); }
+        return kit_error_errno(err, cause, "cannot create a pipe");
+    }
+
+    /* The same close-on-exec pipe as kit_command_spawn, so a program that is
+     * not there is reported as such rather than as an exit status. */
+    int fail[2];
+    if (!kit__spawn_pipe(fail, err)) {
+        if (op[0] >= 0) { close(op[0]); close(op[1]); }
+        if (ep[0] >= 0) { close(ep[0]); close(ep[1]); }
         return false;
     }
 
@@ -3075,13 +3174,15 @@ static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *err) {
     c->count--;
 
     if (pid < 0) {
-        KIT_ERROR("kit_command_capture: fork failed: %s", strerror(errno));
+        int cause = errno;
         if (op[0] >= 0) { close(op[0]); close(op[1]); }
         if (ep[0] >= 0) { close(ep[0]); close(ep[1]); }
-        return false;
+        close(fail[0]); close(fail[1]);
+        return kit_error_errno(err, cause, "cannot fork to run '%s'", c->items[0]);
     }
 
     if (pid == 0) {
+        close(fail[0]);
         if (op[0] >= 0) close(op[0]);
         if (ep[0] >= 0) close(ep[0]);
 
@@ -3095,28 +3196,39 @@ static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *err) {
         if (ep[1] >= 0) close(ep[1]);
 
         execvp(c->items[0], (char *const *)(void *)c->items);
-        if (KIT_LOG_ERROR >= KIT__MIN_LEVEL)
-            dprintf(STDERR_FILENO, "kit_command_capture: execvp '%s' failed: %s\n",
-                    c->items[0], strerror(errno));
-        _exit(127);
+        kit__spawn_failed(fail[1], errno);
     }
 
     if (op[1] >= 0) close(op[1]);
     if (ep[1] >= 0) close(ep[1]);
 
+    close(fail[1]);
+    int exec_cause = kit__spawn_error(fail[0]);
+    close(fail[0]);
+    if (exec_cause != 0) {
+        if (op[0] >= 0) close(op[0]);
+        if (ep[0] >= 0) close(ep[0]);
+        int status;
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
+        return kit_error_errno(err, exec_cause, "cannot run '%s'", c->items[0]);
+    }
+
     struct pollfd  fds[2];
     KitBuf *sinks[2];
     nfds_t         n = 0;
     if (need_out) { fds[n].fd = op[0]; fds[n].events = POLLIN; sinks[n] = out; n++; }
-    if (need_err) { fds[n].fd = ep[0]; fds[n].events = POLLIN; sinks[n] = err; n++; }
+    if (need_err) { fds[n].fd = ep[0]; fds[n].events = POLLIN; sinks[n] = errors; n++; }
 
     char   buf[4096];
     nfds_t still_open = n;
     while (still_open > 0) {
         if (poll(fds, n, -1) < 0) {
             if (errno == EINTR) continue;
-            KIT_ERROR("kit_command_capture: poll failed: %s", strerror(errno));
-            break;
+            kit_error_errno(err, errno, "cannot read the output of '%s'", c->items[0]);
+            for (nfds_t i = 0; i < n; i++) if (fds[i].fd >= 0) close(fds[i].fd);
+            int status;
+            while (waitpid(pid, &status, 0) < 0 && errno == EINTR) { }
+            return false;
         }
         for (nfds_t i = 0; i < n; i++) {
             if (fds[i].fd < 0 || fds[i].revents == 0) continue;
@@ -3132,26 +3244,30 @@ static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *err) {
     }
     for (nfds_t i = 0; i < n; i++) if (fds[i].fd >= 0) close(fds[i].fd);
 
-    return kit_process_wait(pid);
+    return kit_process_wait(pid, err);
 }
 
 #endif /* _WIN32 / POSIX */
 
-bool kit_command_capture(KitCommand *c, KitBuf *sb) {
-    return kit__cmd_capture(c, sb, NULL);
+bool kit_command_capture(KitCommand *c, KitBuf *out, KitError *err) {
+    return kit__cmd_capture(c, out, NULL, err);
 }
 
-bool kit_command_capture_merged(KitCommand *c, KitBuf *sb) {
-    return kit__cmd_capture(c, sb, sb);
+bool kit_command_capture_merged(KitCommand *c, KitBuf *out, KitError *err) {
+    return kit__cmd_capture(c, out, out, err);
 }
 
-bool kit_command_capture_split(KitCommand *c, KitBuf *out, KitBuf *err) {
-    return kit__cmd_capture(c, out, err);
+bool kit_command_capture_split(KitCommand *c, KitBuf *out, KitBuf *errors,
+                               KitError *err) {
+    return kit__cmd_capture(c, out, errors, err);
 }
 
-bool kit_command_run(KitCommand *c) {
-    KitProcess p = kit_command_spawn(c);
-    return kit_process_wait(p);
+bool kit_command_run(KitCommand *c, KitError *err) {
+    KitProcess p = kit_command_spawn(c, err);
+    if (p == KIT_PROCESS_INVALID) return false;
+    if (kit_process_wait(p, err)) return true;
+    /* The name of the program is what the caller wants to read first. */
+    return kit_error_context(err, "running '%s'", c->items[0]);
 }
 
 bool kit_command_run_args(const char *first, ...) {
@@ -3165,7 +3281,7 @@ bool kit_command_run_args(const char *first, ...) {
         kit_command_push(&cmd, arg);
     va_end(args);
 
-    bool ok = kit_command_run(&cmd);
+    bool ok = kit_command_run(&cmd, NULL);
     kit_command_free(&cmd);
     return ok;
 }

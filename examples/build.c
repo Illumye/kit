@@ -75,7 +75,7 @@ static bool compile(char *source, const char *object,
     KitCommand cmd = {0};
     kit_command_push_all(&cmd, "cc", "-std=c11", "-Wall", "-Wextra", "-I", SRC_DIR,
                "-c", source, "-o", object, NULL);
-    bool ok = kit_command_run(&cmd);
+    bool ok = kit_command_run(&cmd, NULL);
     kit_command_free(&cmd);
 
     if (!ok) return kit_error_set(err, KIT_ERR_PROCESS, "the compiler failed");
@@ -94,7 +94,7 @@ static bool link_target(const KitFileList *objects, KitError *err) {
     KitCommand cmd = {0};
     kit_command_push_all(&cmd, "cc", "-o", TARGET, NULL);
     for (size_t i = 0; i < objects->count; ++i) kit_command_push(&cmd, objects->items[i]);
-    bool ok = kit_command_run(&cmd);
+    bool ok = kit_command_run(&cmd, NULL);
     kit_command_free(&cmd);
     return ok ? true : kit_error_set(err, KIT_ERR_PROCESS, "the linker failed");
 }
@@ -127,7 +127,7 @@ int main(int argc, char **argv) {
         KIT_CLI_FLAG('h', "help",    "Show this help",             &help),
     };
 
-    if (!kit_cli_parse_arr(opts, &argc, &argv)) {
+    if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) {
         kit_cli_usage_arr(stderr, prog, opts);
         return 1;
     }

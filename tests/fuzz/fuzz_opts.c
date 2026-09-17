@@ -56,7 +56,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     };
 
     char **argv = argv_buf;
-    if (kit_cli_parse_arr(opts, &argc, &argv)) {
+    if (kit_cli_parse_arr(opts, &argc, &argv, NULL)) {
         assert(argc <= original_argc);
         assert(argv == argv_buf);          /* rewritten in place, not moved */
 

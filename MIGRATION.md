@@ -42,6 +42,22 @@ char *text = kit_fs_read("config.ini", &err);
 if (!text && err.code == KIT_ERR_NOT_FOUND) { ... }
 ```
 
+**Processes and option parsing report failures the same way.**
+`kit_command_run`, `kit_command_spawn`, `kit_process_wait`, the three
+`kit_command_capture*` functions and `kit_cli_parse` all take a `KitError *`
+last, and `kit_cli_parse_arr` gained the argument too. `kit_command_run_args`
+is the exception: varargs must come last, so it always logs.
+
+```c
+if (!kit_cli_parse_arr(opts, &argc, &argv))        /* before */
+if (!kit_cli_parse_arr(opts, &argc, &argv, NULL))  /* same behaviour */
+```
+
+A command that cannot be started is now reported with the reason the system
+gave, `KIT_ERR_NOT_FOUND` for a missing program, instead of the child exiting
+with code 127. A command that ran and failed is `KIT_ERR_PROCESS`, with its
+exit status or signal number in `native`.
+
 ## Every name
 
 ### Configuration

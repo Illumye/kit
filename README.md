@@ -69,13 +69,17 @@ starting the server: reading config.ini: line 12: expected an integer (invalid)
 
 Every kit function that can fail takes a `KitError *` last. Pass one to receive
 the failure, or `NULL` to have it logged instead: a kit function never both
-logs a failure and reports it.
+logs a failure and reports it. The exceptions are the functions that answer a
+question rather than fail, `kit_fs_is_file` and the `kit_str_to_*` parsers
+among them: a no is an answer, not a failure.
 
 The code is a category that tells the caller what to do, `not_found`,
 `permission` or `busy` among others, and the platform's own value stays in
 `err.native`. The filesystem normalises the codes across platforms: removing a
 directory with `kit_fs_remove` is `wrong_kind` on Linux, macOS and Windows
-alike, although each system reports it differently. Context is added outermost first as the error travels up. When
+alike, although each system reports it differently. A program that is not
+installed is `not_found` with the reason the system gave, rather than a child
+that mysteriously exited with code 127. Context is added outermost first as the error travels up. When
 the chain outgrows the buffer, the middle is elided and both the outermost
 context and the root cause are kept.
 
@@ -94,7 +98,7 @@ int main(int argc, char **argv) {
         KIT_CLI_FLAG('v', "verbose", "Say more",    &verbose),
         KIT_CLI_STR ('o', "output",  "FILE", "Where to write", &out),
     };
-    if (!kit_cli_parse_arr(opts, &argc, &argv)) {
+    if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) {
         kit_cli_usage_arr(stderr, prog, opts);
         return 1;
     }
@@ -102,7 +106,7 @@ int main(int argc, char **argv) {
     if (kit_fs_stale1(out, "main.c", NULL) != 0) {
         KitCommand cmd = KIT_ZEROED;
         kit_command_push_all(&cmd, "cc", "-o", out, "main.c", NULL);
-        if (!kit_command_run(&cmd)) return 1;
+        if (!kit_command_run(&cmd, NULL)) return 1;
         kit_command_free(&cmd);
     }
 
@@ -125,7 +129,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 106 tests over seven files, and the header compiles warning-free
+The suite is 111 tests over seven files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 

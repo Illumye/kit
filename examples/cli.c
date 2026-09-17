@@ -22,7 +22,7 @@ int main(int argc, char **argv) {
         KIT_CLI_INT ('j', "jobs",     "N",    "Jobs parallèles",       &jobs),
     };
 
-    if (!kit_cli_parse_arr(opts, &argc, &argv)) {
+    if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) {
         kit_cli_usage_arr(stderr, prog, opts);
         return 1;
     }
