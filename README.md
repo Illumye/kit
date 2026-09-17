@@ -1,63 +1,78 @@
-# utils.h
+# kit.h
 
-A single-header C11 utility library. Drop the file into a project, define the
-implementation macro in exactly one translation unit, and use it.
+A single-header toolkit for C11 and C++17. Drop the file into a project, define
+the implementation macro in exactly one translation unit, and use it.
 
 ```c
-#define UTILS_IMPLEMENTATION
-#include "utils.h"
+#define KIT_IMPLEMENTATION
+#include "kit.h"
 ```
 
 Every other file just includes it. There is nothing to build and nothing to
 link, apart from `-lm` when the vector maths is in use.
 
+## Naming
+
+Everything the header exposes lives in one namespace, so it sits next to any
+other library, or any project's own `read_file` and `LOG`, without a clash.
+
+| Kind | Form | Example |
+|---|---|---|
+| Functions and function-like macros | `kit_module_action` | `kit_str_trim` |
+| Types | `KitName` | `KitStr` |
+| Constants, enumerators, other macros | `KIT_NAME` | `KIT_LOG_ERROR` |
+| Internals | `kit__` or `KIT__` | `kit__log` |
+
+Coming from `utils.h`? [MIGRATION.md](MIGRATION.md) maps every old name to its
+new one.
+
 ## What it covers
 
-| Section | What it gives you |
-|---|---|
-| Logging | Levels, configurable record fields, colour only on a terminal |
-| Files | Streamed reads, `mkdir_p`, `read_dir`, `copy_file`, `needs_rebuild` |
-| Dynamic arrays | `da_append`, `da_foreach` and friends over any `{items, count, capacity}` struct |
-| String views | Non-owning slices: search, splitting, strict numeric parsing |
-| Arena | Bump allocation over a chain of regions, plus a process-wide scratch arena |
-| Stopwatch | Monotonic timing |
-| Vector maths | `Vec2` and `Vec3` |
-| CLI | Option parsing with grouped short flags, and generated usage text |
-| String builder | Growable text buffer with `printf` formatting |
-| Commands | Run a child process, synchronously, asynchronously, or capturing either stream |
-| Hash map | String keys, open addressing |
-| Paths | `basename`, `dirname`, `join`, all bounded |
+| Module | Prefix | What it gives you |
+|---|---|---|
+| Logging | `kit_log`, `KIT_LOG` | Levels, configurable record fields, colour only on a terminal |
+| Filesystem | `kit_fs` | Streamed reads, recursive mkdir, sorted listing, staleness checks |
+| Arrays | `kit_array` | Growable arrays over any `{items, count, capacity}` struct |
+| Strings | `kit_str` | Non-owning slices: search, splitting, strict numeric parsing |
+| Arena | `kit_arena`, `kit_scratch` | Bump allocation over chained regions, and per-thread scratch |
+| Timer | `kit_timer` | Monotonic timing |
+| Vectors | `kit_vec2`, `kit_vec3` | 2D and 3D vector maths |
+| Command line | `kit_cli` | Option parsing with grouped short flags, generated usage |
+| Buffers | `kit_buf` | Growable text buffer with `printf` formatting |
+| Processes | `kit_command`, `kit_process` | Run a child, wait for it, or capture either stream |
+| Map | `kit_map` | String keys, open addressing |
+| Paths | `kit_path` | `basename`, `dirname`, `join`, all bounded |
 
-Each section is documented where it is declared. Read the header.
+Each module is documented where it is declared. Read the header.
 
 ## A taste of it
 
 ```c
-#define UTILS_IMPLEMENTATION
-#include "utils.h"
+#define KIT_IMPLEMENTATION
+#include "kit.h"
 
 int main(int argc, char **argv) {
-    const char *prog = args_shift(&argc, &argv);
+    const char *prog = kit_cli_shift(&argc, &argv);
 
     bool verbose = false;
     const char *out = "a.out";
-    Opt opts[] = {
-        OPT_FLAG('v', "verbose", "Say more",    &verbose),
-        OPT_STR ('o', "output",  "FILE", "Where to write", &out),
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG('v', "verbose", "Say more",    &verbose),
+        KIT_CLI_STR ('o', "output",  "FILE", "Where to write", &out),
     };
-    if (!opts_parse_arr(opts, &argc, &argv)) {
-        opts_usage_arr(stderr, prog, opts);
+    if (!kit_cli_parse_arr(opts, &argc, &argv)) {
+        kit_cli_usage_arr(stderr, prog, opts);
         return 1;
     }
 
-    if (needs_rebuild1(out, "main.c") != 0) {
-        Cmd cmd = {0};
-        cmd_extend(&cmd, "cc", "-o", out, "main.c", NULL);
-        if (!cmd_run(&cmd)) return 1;
-        cmd_free(&cmd);
+    if (kit_fs_stale1(out, "main.c") != 0) {
+        KitCommand cmd = KIT_ZEROED;
+        kit_command_push_all(&cmd, "cc", "-o", out, "main.c", NULL);
+        if (!kit_command_run(&cmd)) return 1;
+        kit_command_free(&cmd);
     }
 
-    LOG(LOG_INFO, "%s is up to date", out);
+    KIT_LOG(KIT_LOG_INFO, "%s is up to date", out);
     return 0;
 }
 ```
@@ -75,7 +90,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 77 tests over five files, and the header compiles warning-free
+The suite is 86 tests over six files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 
@@ -84,7 +99,7 @@ under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 `examples/build.c` is a build tool in one file. It compiles `examples/demo`
 into an executable, skips any step whose output is newer than its inputs, and
 rebuilds when a header changes. It uses the option parser, the filesystem
-layer, the temporary allocator, the command runner and the logger together, so
+layer, the scratch allocator, the command runner and the logger together, so
 it doubles as the integration test that `make check-examples` runs.
 
 ```sh
@@ -98,7 +113,7 @@ make examples
 
 ## Fuzzing
 
-`tests/fuzz` holds four libFuzzer targets, over the String_View parsers, the
+`tests/fuzz` holds four libFuzzer targets, over the string parsers, the
 path helpers, the option parser and the hash map. Two of them are differential:
 the numeric parsers are compared against `strtoll` and `strtoull`, and the hash
 map against a naive array applying the same operations. The path target
@@ -111,8 +126,8 @@ make FUZZ_SECS=600 fuzz   # ten minutes per target
 ```
 
 The harness has been mutation tested: injecting a leading-space bug into
-`sv_to_i64` and an off-by-one into `path_join` is caught within seconds, by
-the differential assertion and by AddressSanitizer respectively.
+`kit_str_to_i64` and an off-by-one into `kit_path_join` is caught within
+seconds, by the differential assertion and by AddressSanitizer respectively.
 
 No corpus is committed, on purpose. These targets saturate their reachable
 code almost immediately: a 180-second run reaches exactly the coverage a
@@ -126,11 +141,11 @@ Define these before including the header to change its defaults.
 
 | Macro | Effect |
 |---|---|
-| `UTILS_NO_VEC_MATH` | Drops the vector maths and the dependency on `-lm` |
-| `DA_INIT_CAP` | Initial capacity of a dynamic array, default 256 |
-| `ARENA_REGION_SIZE` | Size of a new arena region, default 64 KiB |
-| `UTILS_READ_CHUNK` | Read buffer size, default 64 KiB |
-| `UTILS_NO_THREAD_LOCAL` | One shared scratch arena instead of one per thread |
+| `KIT_NO_VEC_MATH` | Drops the vector maths and the dependency on `-lm` |
+| `KIT_ARRAY_INIT_CAP` | Initial capacity of a dynamic array, default 256 |
+| `KIT_ARENA_REGION_SIZE` | Size of a new arena region, default 64 KiB |
+| `KIT_READ_CHUNK` | Read buffer size, default 64 KiB |
+| `KIT_NO_THREAD_LOCAL` | One shared scratch arena instead of one per thread |
 
 On POSIX the header requests `_POSIX_C_SOURCE` for `clock_gettime`, `dprintf`
 and `isatty`, so include it before any other system header when building with
@@ -154,8 +169,8 @@ needs no separate C translation unit. Two spellings differ between the
 languages and the header provides one that works in both:
 
 ```cpp
-Cmd cmd = UTILS_ZEROED;   // {0} in C warns in C++, {} in C++ is not C
-Vec2 v  = V2(3, 4);       // a compound literal in C, brace init in C++
+KitCommand cmd = KIT_ZEROED;     // {0} in C warns in C++, {} in C++ is not C
+KitVec2    v   = KIT_VEC2(3, 4); // a compound literal in C, brace init in C++
 ```
 
 The one thing ISO C++ does not allow is the flexible array member the arena
@@ -166,5 +181,5 @@ uses for its regions. Every compiler accepts it; only `-pedantic` complains.
 Public domain, under [the Unlicense](LICENSE). Copy the header into your
 project, change it, ship it, sell it. No attribution required.
 
-The full licence text is repeated at the end of `utils.h`, because a header
+The full licence text is repeated at the end of `kit.h`, because a header
 meant to be copied on its own has to carry its own terms.

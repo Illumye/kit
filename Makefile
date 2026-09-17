@@ -1,4 +1,4 @@
-# utils.h - build and test
+# kit.h - build and test
 #
 #   make test        run the suite
 #   make test-asan   run it under AddressSanitizer + UndefinedBehaviorSanitizer
@@ -39,10 +39,10 @@ all: test
 
 # --- tests --------------------------------------------------------------------
 
-tests/run_%: tests/%.c utils.h tests/utest.h
+tests/run_%: tests/%.c kit.h tests/utest.h
 	$(CC) $(CFLAGS) $< -o $@ $(LDLIBS)
 
-tests/run_%_asan: tests/%.c utils.h tests/utest.h
+tests/run_%_asan: tests/%.c kit.h tests/utest.h
 	$(CC) $(CFLAGS) -O1 $(SAN) $< -o $@ $(LDLIBS)
 
 test: $(TEST_BIN)
@@ -54,16 +54,16 @@ test-asan: $(TEST_ASAN)
 	done; exit $$rc
 
 # The header requests the POSIX symbols it needs, so a strict -std=c11 with no
-# GNU extensions must compile clean. UTILS_NO_VEC_MATH must also stay buildable,
+# GNU extensions must compile clean. KIT_NO_VEC_MATH must also stay buildable,
 # and reaching the header twice in one translation unit must not duplicate the
 # implementation.
 check-c11:
-	@echo '#define UTILS_IMPLEMENTATION' > .compile-check.c
-	@echo '#include "utils.h"' >> .compile-check.c
-	@echo '#include "utils.h"' >> .compile-check.c
+	@echo '#define KIT_IMPLEMENTATION' > .compile-check.c
+	@echo '#include "kit.h"' >> .compile-check.c
+	@echo '#include "kit.h"' >> .compile-check.c
 	@echo 'int main(void) { return 0; }' >> .compile-check.c
 	$(CC) -std=c11 $(WARNINGS) -Werror .compile-check.c -o /dev/null $(LDLIBS)
-	$(CC) -std=c11 $(WARNINGS) -Werror -DUTILS_NO_VEC_MATH .compile-check.c -o /dev/null
+	$(CC) -std=c11 $(WARNINGS) -Werror -DKIT_NO_VEC_MATH .compile-check.c -o /dev/null
 	@rm -f .compile-check.c
 	@echo "strict C11 compile: ok"
 
@@ -74,7 +74,7 @@ test-all: check-c11 check-cxx test test-asan check-examples
 # only its declarations. This is what keeps the extern "C" guard, the
 # language-neutral struct literals and the explicit allocation casts honest.
 
-tests/run_test_cxx: tests/test_cxx.cpp utils.h tests/utest.h
+tests/run_test_cxx: tests/test_cxx.cpp kit.h tests/utest.h
 	$(CXX) $(CXXFLAGS) $< -o $@ $(LDLIBS)
 
 check-cxx: tests/run_test_cxx
@@ -85,7 +85,7 @@ check-cxx: tests/run_test_cxx
 # and the sanitizers catch the rest. Not part of test-all: it is a search, not
 # a pass or fail, and it takes as long as you let it.
 
-tests/fuzz/run_%: tests/fuzz/%.c utils.h tests/fuzz/fuzz_input.h
+tests/fuzz/run_%: tests/fuzz/%.c kit.h tests/fuzz/fuzz_input.h
 	$(FUZZ_CC) -std=c11 -g -O1 -fsanitize=fuzzer,address,undefined \
 	           -fno-sanitize-recover=all $(WARNINGS) $< -o $@
 
@@ -102,7 +102,7 @@ fuzz: $(FUZZ_BIN)
 
 # --- Windows -------------------------------------------------------------------
 
-tests/win_%.exe: tests/%.c utils.h tests/utest.h
+tests/win_%.exe: tests/%.c kit.h tests/utest.h
 	$(MINGW) $(CFLAGS) $< -o $@
 
 # Not part of test-all: it needs a cross compiler that most machines lack.
@@ -114,10 +114,10 @@ check-windows: $(WIN_BIN)
 
 examples: examples/cli examples/build
 
-examples/cli: examples/cli.c utils.h
+examples/cli: examples/cli.c kit.h
 	$(CC) $(CFLAGS) $< -o $@
 
-examples/build: examples/build.c utils.h
+examples/build: examples/build.c kit.h
 	$(CC) $(CFLAGS) $< -o $@
 
 # The example build tool is the integration test: it drives the option parser,

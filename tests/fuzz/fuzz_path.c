@@ -5,8 +5,8 @@
  * rather than into silence.
  */
 
-#define UTILS_IMPLEMENTATION
-#include "../../utils.h"
+#define KIT_IMPLEMENTATION
+#include "../../kit.h"
 #include "fuzz_input.h"
 
 #include <assert.h>
@@ -30,10 +30,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     size_t bufsz = fuzz_below(&in, 40);
     char  *buf   = bufsz ? malloc(bufsz) : malloc(1);
 
-    path_dirname(a, buf, bufsz);
+    kit_path_dirname(a, buf, bufsz);
     check_terminated(buf, bufsz);
 
-    path_join(buf, bufsz, a, b);
+    kit_path_join(buf, bufsz, a, b);
     check_terminated(buf, bufsz);
 
     /* Joining must never invent a byte the inputs did not have, beyond one
@@ -45,14 +45,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     }
 
     /* The read-only helpers return pointers into their argument. */
-    const char *base = path_basename(a);
+    const char *base = kit_path_basename(a);
     assert(base >= a && base <= a + strlen(a));
 
-    const char *ext = path_ext(a);
+    const char *ext = kit_path_ext(a);
     assert(ext >= a && ext <= a + strlen(a));
     assert(*ext == '\0' || *ext == '.');
 
-    (void)path_is_absolute(a);
+    (void)kit_path_is_absolute(a);
 
     /* Joining onto its own output must stay bounded too, which is how a
      * caller builds a path one component at a time. */
@@ -63,7 +63,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             char comp[16];
             fuzz_cstr(&in, comp, sizeof(comp));
             char *tmp = malloc(bufsz);
-            path_join(tmp, bufsz, acc, comp);
+            kit_path_join(tmp, bufsz, acc, comp);
             check_terminated(tmp, bufsz);
             memcpy(acc, tmp, bufsz);
             free(tmp);

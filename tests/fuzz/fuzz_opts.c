@@ -4,8 +4,8 @@
  * reports more arguments than it received, and always terminates.
  */
 
-#define UTILS_IMPLEMENTATION
-#include "../../utils.h"
+#define KIT_IMPLEMENTATION
+#include "../../kit.h"
 #include "fuzz_input.h"
 
 #include <assert.h>
@@ -17,7 +17,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (size > 4096) return 0;
     FuzzInput in = fuzz_input(data, size);
 
-    log_set_level(LOG_CRITICAL);   /* the errors are expected, not interesting */
+    kit_log_set_level(KIT_LOG_CRITICAL);   /* the errors are expected, not interesting */
 
     /* Split the input on NUL into argv-shaped tokens, each heap allocated so
      * a read past one is a fault. */
@@ -46,17 +46,17 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     const char *str_o  = "default";
     int         num_j  = 0;
 
-    Opt opts[] = {
-        OPT_FLAG('a', "all",     "a", &flag_a),
-        OPT_FLAG('b', "brief",   "b", &flag_b),
-        OPT_FLAG('c', NULL,      "c", &flag_c),
-        OPT_STR ('o', "output",  "FILE", "o", &str_o),
-        OPT_INT ('j', "jobs",    "N",    "j", &num_j),
-        OPT_STR (0,   "only-long", "V",  "l", &str_o),
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG('a', "all",     "a", &flag_a),
+        KIT_CLI_FLAG('b', "brief",   "b", &flag_b),
+        KIT_CLI_FLAG('c', NULL,      "c", &flag_c),
+        KIT_CLI_STR ('o', "output",  "FILE", "o", &str_o),
+        KIT_CLI_INT ('j', "jobs",    "N",    "j", &num_j),
+        KIT_CLI_STR (0,   "only-long", "V",  "l", &str_o),
     };
 
     char **argv = argv_buf;
-    if (opts_parse_arr(opts, &argc, &argv)) {
+    if (kit_cli_parse_arr(opts, &argc, &argv)) {
         assert(argc <= original_argc);
         assert(argv == argv_buf);          /* rewritten in place, not moved */
 
@@ -82,7 +82,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     /* Rendering the usage text must not depend on the parse succeeding. */
     FILE *sink = fopen("/dev/null", "w");
-    if (sink) { opts_usage_arr(sink, "fuzz", opts); fclose(sink); }
+    if (sink) { kit_cli_usage_arr(sink, "fuzz", opts); fclose(sink); }
 
     for (int i = 0; i < original_argc; i++) free(storage[i]);
     return 0;

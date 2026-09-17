@@ -1,36 +1,36 @@
 /*
  * CLI option parsing, command execution, stopwatch and maths.
- * Includes the regression test for the truncated opts_usage column.
+ * Includes the regression test for the truncated kit_cli_usage column.
  */
 
-#define UTILS_IMPLEMENTATION
-#include "../utils.h"
+#define KIT_IMPLEMENTATION
+#include "../kit.h"
 #include "utest.h"
 
 /* Builds an argv the way main() receives it, minus argv[0].
- * The one cast keeps string literals const while handing opts_parse the char**
+ * The one cast keeps string literals const while handing kit_cli_parse the char**
  * it expects; the parser only reorders the pointers, never the characters. */
 #define ARGV(...)                                                       \
     const char *argv_storage[] = { __VA_ARGS__ };                       \
-    int    argc = (int)UTILS_ARRAY_LEN(argv_storage);                   \
+    int    argc = (int)KIT_COUNTOF(argv_storage);                   \
     char **argv = (char **)(void *)argv_storage
 
 /* --- option parsing ------------------------------------------------------- */
 
-TEST(opts_parse_every_supported_form) {
+TEST(cli_parse_every_supported_form) {
     bool        verbose = false;
     const char *output  = "default";
     int         jobs    = 1;
 
-    Opt opts[] = {
-        OPT_FLAG('v', "verbose", "verbose", &verbose),
-        OPT_STR ('o', "output", "FILE", "output", &output),
-        OPT_INT ('j', "jobs", "N", "jobs", &jobs),
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG('v', "verbose", "verbose", &verbose),
+        KIT_CLI_STR ('o', "output", "FILE", "output", &output),
+        KIT_CLI_INT ('j', "jobs", "N", "jobs", &jobs),
     };
 
     {   /* short with a separate value, and an attached one */
         ARGV("-v", "-o", "sep.txt", "-j4", "file.c");
-        CHECK(opts_parse_arr(opts, &argc, &argv));
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv));
         CHECK(verbose);
         CHECK_STR(output, "sep.txt");
         CHECK_INT(jobs, 4);
@@ -39,40 +39,40 @@ TEST(opts_parse_every_supported_form) {
     }
     {   /* '=' separators, short and long */
         ARGV("-o=eq.txt", "--jobs=8");
-        CHECK(opts_parse_arr(opts, &argc, &argv));
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv));
         CHECK_STR(output, "eq.txt");
         CHECK_INT(jobs, 8);
         CHECK_INT(argc, 0);
     }
     {   /* long with a separate value */
         ARGV("--output", "long.txt", "--verbose");
-        CHECK(opts_parse_arr(opts, &argc, &argv));
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv));
         CHECK_STR(output, "long.txt");
         CHECK_INT(argc, 0);
     }
     {   /* negative integers */
         ARGV("--jobs=-3");
-        CHECK(opts_parse_arr(opts, &argc, &argv));
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv));
         CHECK_INT(jobs, -3);
     }
 }
 
-TEST(opts_parse_grouped_short_flags) {
+TEST(cli_parse_grouped_short_flags) {
     bool        a = false, b = false, c = false;
     const char *output = "default";
     int         jobs   = 0;
 
-    Opt opts[] = {
-        OPT_FLAG('a', "all",    "a", &a),
-        OPT_FLAG('b', "brief",  "b", &b),
-        OPT_FLAG('c', "colour", "c", &c),
-        OPT_STR ('o', "output", "FILE", "output", &output),
-        OPT_INT ('j', "jobs",   "N",    "jobs",   &jobs),
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG('a', "all",    "a", &a),
+        KIT_CLI_FLAG('b', "brief",  "b", &b),
+        KIT_CLI_FLAG('c', "colour", "c", &c),
+        KIT_CLI_STR ('o', "output", "FILE", "output", &output),
+        KIT_CLI_INT ('j', "jobs",   "N",    "jobs",   &jobs),
     };
 
     {   /* the whole point: -abc means -a -b -c */
         ARGV("-abc", "rest.c");
-        CHECK(opts_parse_arr(opts, &argc, &argv));
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv));
         CHECK(a); CHECK(b); CHECK(c);
         CHECK_INT(argc, 1);
         CHECK_STR(argv[0], "rest.c");
@@ -80,44 +80,44 @@ TEST(opts_parse_grouped_short_flags) {
     {   /* a group ending on a value option, value attached */
         a = b = false; output = "default";
         ARGV("-abofile.txt");
-        CHECK(opts_parse_arr(opts, &argc, &argv));
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv));
         CHECK(a); CHECK(b);
         CHECK_STR(output, "file.txt");
     }
     {   /* a group ending on a value option, value in the next argument */
         a = false; jobs = 0;
         ARGV("-aj", "12");
-        CHECK(opts_parse_arr(opts, &argc, &argv));
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv));
         CHECK(a);
         CHECK_INT(jobs, 12);
     }
     {   /* '=' still works at the end of a group */
         a = false; output = "default";
         ARGV("-ao=eq.txt");
-        CHECK(opts_parse_arr(opts, &argc, &argv));
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv));
         CHECK(a);
         CHECK_STR(output, "eq.txt");
     }
     {   /* an unknown letter names itself, not the whole group */
         ARGV("-azc");
-        CHECK(!opts_parse_arr(opts, &argc, &argv));
+        CHECK(!kit_cli_parse_arr(opts, &argc, &argv));
     }
     {   /* a flag inside a group still refuses a value */
         ARGV("-ab=1");
-        CHECK(!opts_parse_arr(opts, &argc, &argv));
+        CHECK(!kit_cli_parse_arr(opts, &argc, &argv));
     }
     {   /* a value option at the end of a group with nothing left */
         ARGV("-ao");
-        CHECK(!opts_parse_arr(opts, &argc, &argv));
+        CHECK(!kit_cli_parse_arr(opts, &argc, &argv));
     }
 }
 
-TEST(opts_parse_positionals_and_double_dash) {
+TEST(cli_parse_positionals_and_double_dash) {
     bool verbose = false;
-    Opt opts[] = { OPT_FLAG('v', "verbose", "verbose", &verbose) };
+    KitCliOpt opts[] = { KIT_CLI_FLAG('v', "verbose", "verbose", &verbose) };
 
     ARGV("first", "-v", "second", "--", "-v", "--not-an-option", "-");
-    CHECK(opts_parse_arr(opts, &argc, &argv));
+    CHECK(kit_cli_parse_arr(opts, &argc, &argv));
     CHECK(verbose);
     CHECK_INT(argc, 5);
     CHECK_STR(argv[0], "first");
@@ -127,41 +127,41 @@ TEST(opts_parse_positionals_and_double_dash) {
     CHECK_STR(argv[4], "-");             /* a lone dash is positional */
 }
 
-TEST(opts_parse_rejects_bad_input) {
+TEST(cli_parse_rejects_bad_input) {
     bool verbose = false;
     const char *output = "x";
     int jobs = 0;
-    Opt opts[] = {
-        OPT_FLAG('v', "verbose", "verbose", &verbose),
-        OPT_STR ('o', "output", "FILE", "output", &output),
-        OPT_INT ('j', "jobs", "N", "jobs", &jobs),
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG('v', "verbose", "verbose", &verbose),
+        KIT_CLI_STR ('o', "output", "FILE", "output", &output),
+        KIT_CLI_INT ('j', "jobs", "N", "jobs", &jobs),
     };
 
-    { ARGV("--unknown");    CHECK(!opts_parse_arr(opts, &argc, &argv)); }
-    { ARGV("-z");           CHECK(!opts_parse_arr(opts, &argc, &argv)); }
-    { ARGV("--output");     CHECK(!opts_parse_arr(opts, &argc, &argv)); }  /* value missing */
-    { ARGV("--verbose=1");  CHECK(!opts_parse_arr(opts, &argc, &argv)); }  /* flag takes none */
-    { ARGV("--jobs=abc");   CHECK(!opts_parse_arr(opts, &argc, &argv)); }
-    { ARGV("--jobs=12x");   CHECK(!opts_parse_arr(opts, &argc, &argv)); }
-    { ARGV("--jobs=99999999999999999999"); CHECK(!opts_parse_arr(opts, &argc, &argv)); }
+    { ARGV("--unknown");    CHECK(!kit_cli_parse_arr(opts, &argc, &argv)); }
+    { ARGV("-z");           CHECK(!kit_cli_parse_arr(opts, &argc, &argv)); }
+    { ARGV("--output");     CHECK(!kit_cli_parse_arr(opts, &argc, &argv)); }  /* value missing */
+    { ARGV("--verbose=1");  CHECK(!kit_cli_parse_arr(opts, &argc, &argv)); }  /* flag takes none */
+    { ARGV("--jobs=abc");   CHECK(!kit_cli_parse_arr(opts, &argc, &argv)); }
+    { ARGV("--jobs=12x");   CHECK(!kit_cli_parse_arr(opts, &argc, &argv)); }
+    { ARGV("--jobs=99999999999999999999"); CHECK(!kit_cli_parse_arr(opts, &argc, &argv)); }
 }
 
 /* Regression: the help column was rendered into a 48-byte buffer, which cut
  * long option names in half. */
-TEST(opts_usage_prints_long_names_in_full) {
+TEST(cli_usage_prints_long_names_in_full) {
     const char *out = "x";
-    Opt opts[] = {
-        OPT_STR('x', "an-extremely-long-option-name-that-overflows-the-column",
+    KitCliOpt opts[] = {
+        KIT_CLI_STR('x', "an-extremely-long-option-name-that-overflows-the-column",
                 "A_VERY_LONG_METAVARIABLE_NAME", "the help text", &out),
     };
 
     const char *path = "utest-tmp-usage.txt";
     FILE *fp = fopen(path, "w");
     if (!CHECK(fp != NULL)) return;
-    opts_usage_arr(fp, "prog", opts);
+    kit_cli_usage_arr(fp, "prog", opts);
     fclose(fp);
 
-    char *text = read_file(path);
+    char *text = kit_fs_read(path);
     if (!CHECK(text != NULL)) return;
     CHECK(strstr(text, "--an-extremely-long-option-name-that-overflows-the-column"
                        "=<A_VERY_LONG_METAVARIABLE_NAME>") != NULL);
@@ -171,312 +171,312 @@ TEST(opts_usage_prints_long_names_in_full) {
     remove(path);
 }
 
-TEST(args_shift_consumes_left_to_right) {
+TEST(cli_shift_consumes_left_to_right) {
     ARGV("prog", "a", "b");
-    CHECK_STR(args_shift(&argc, &argv), "prog");
-    CHECK_STR(args_shift(&argc, &argv), "a");
-    CHECK_STR(args_shift(&argc, &argv), "b");
-    CHECK(args_shift(&argc, &argv) == NULL);
+    CHECK_STR(kit_cli_shift(&argc, &argv), "prog");
+    CHECK_STR(kit_cli_shift(&argc, &argv), "a");
+    CHECK_STR(kit_cli_shift(&argc, &argv), "b");
+    CHECK(kit_cli_shift(&argc, &argv) == NULL);
     CHECK_INT(argc, 0);
 }
 
 /* --- command execution ---------------------------------------------------- */
 
 #ifndef _WIN32
-TEST(cmd_capture_collects_stdout) {
-    Cmd c = {0};
-    cmd_extend(&c, "printf", "one\ntwo\n", NULL);
+TEST(command_capture_collects_stdout) {
+    KitCommand c = {0};
+    kit_command_push_all(&c, "printf", "one\ntwo\n", NULL);
 
-    StringBuilder sb = {0};
-    CHECK(cmd_capture(&c, &sb));
-    CHECK_STR(sb_cstr(&sb), "one\ntwo\n");
+    KitBuf sb = {0};
+    CHECK(kit_command_capture(&c, &sb));
+    CHECK_STR(kit_buf_cstr(&sb), "one\ntwo\n");
 
-    sb_free(&sb);
-    cmd_free(&c);
+    kit_buf_free(&sb);
+    kit_command_free(&c);
 }
 
-TEST(cmd_capture_handles_output_larger_than_the_pipe_buffer) {
-    Cmd c = {0};
-    cmd_extend(&c, "sh", "-c", "for i in $(seq 1 20000); do echo line$i; done", NULL);
+TEST(command_capture_handles_output_larger_than_the_pipe_buffer) {
+    KitCommand c = {0};
+    kit_command_push_all(&c, "sh", "-c", "for i in $(seq 1 20000); do echo line$i; done", NULL);
 
-    StringBuilder sb = {0};
-    CHECK(cmd_capture(&c, &sb));
+    KitBuf sb = {0};
+    CHECK(kit_command_capture(&c, &sb));
     CHECK(sb.count > 150000);
-    CHECK(sv_starts_with_cstr(SV(sb_cstr(&sb)), "line1\n"));
-    CHECK(sv_ends_with_cstr(SV(sb_cstr(&sb)), "line20000\n"));
+    CHECK(kit_str_starts_with_cstr(KIT_STR(kit_buf_cstr(&sb)), "line1\n"));
+    CHECK(kit_str_ends_with_cstr(KIT_STR(kit_buf_cstr(&sb)), "line20000\n"));
 
-    sb_free(&sb);
-    cmd_free(&c);
+    kit_buf_free(&sb);
+    kit_command_free(&c);
 }
 
-TEST(cmd_capture_merged_interleaves_both_streams) {
-    Cmd c = {0};
-    cmd_extend(&c, "sh", "-c", "echo out; echo err >&2; echo out2", NULL);
+TEST(command_capture_merged_interleaves_both_streams) {
+    KitCommand c = {0};
+    kit_command_push_all(&c, "sh", "-c", "echo out; echo err >&2; echo out2", NULL);
 
-    StringBuilder sb = {0};
-    CHECK(cmd_capture_merged(&c, &sb));
-    CHECK(sv_contains(SV(sb_cstr(&sb)), SV("out\n")));
-    CHECK(sv_contains(SV(sb_cstr(&sb)), SV("err\n")));
-    CHECK(sv_contains(SV(sb_cstr(&sb)), SV("out2\n")));
+    KitBuf sb = {0};
+    CHECK(kit_command_capture_merged(&c, &sb));
+    CHECK(kit_str_contains(KIT_STR(kit_buf_cstr(&sb)), KIT_STR("out\n")));
+    CHECK(kit_str_contains(KIT_STR(kit_buf_cstr(&sb)), KIT_STR("err\n")));
+    CHECK(kit_str_contains(KIT_STR(kit_buf_cstr(&sb)), KIT_STR("out2\n")));
 
-    /* Plain cmd_capture must still leave stderr alone. */
-    sb_reset(&sb);
-    cmd_reset(&c);
-    cmd_extend(&c, "sh", "-c", "echo out; echo err >&2", NULL);
-    CHECK(cmd_capture(&c, &sb));
-    CHECK_STR(sb_cstr(&sb), "out\n");
+    /* Plain kit_command_capture must still leave stderr alone. */
+    kit_buf_reset(&sb);
+    kit_command_reset(&c);
+    kit_command_push_all(&c, "sh", "-c", "echo out; echo err >&2", NULL);
+    CHECK(kit_command_capture(&c, &sb));
+    CHECK_STR(kit_buf_cstr(&sb), "out\n");
 
     /* Output is kept even when the child fails. */
-    sb_reset(&sb);
-    cmd_reset(&c);
-    cmd_extend(&c, "sh", "-c", "echo partial >&2; exit 3", NULL);
-    CHECK(!cmd_capture_merged(&c, &sb));
-    CHECK_STR(sb_cstr(&sb), "partial\n");
+    kit_buf_reset(&sb);
+    kit_command_reset(&c);
+    kit_command_push_all(&c, "sh", "-c", "echo partial >&2; exit 3", NULL);
+    CHECK(!kit_command_capture_merged(&c, &sb));
+    CHECK_STR(kit_buf_cstr(&sb), "partial\n");
 
-    sb_free(&sb);
-    cmd_free(&c);
+    kit_buf_free(&sb);
+    kit_command_free(&c);
 }
 
-TEST(cmd_capture_ex_separates_the_streams) {
-    Cmd c = {0};
-    cmd_extend(&c, "sh", "-c", "echo to-out; echo to-err >&2", NULL);
+TEST(command_capture_ex_separates_the_streams) {
+    KitCommand c = {0};
+    kit_command_push_all(&c, "sh", "-c", "echo to-out; echo to-err >&2", NULL);
 
-    StringBuilder out = {0}, err = {0};
-    CHECK(cmd_capture_ex(&c, &out, &err));
-    CHECK_STR(sb_cstr(&out), "to-out\n");
-    CHECK_STR(sb_cstr(&err), "to-err\n");
+    KitBuf out = {0}, err = {0};
+    CHECK(kit_command_capture_split(&c, &out, &err));
+    CHECK_STR(kit_buf_cstr(&out), "to-out\n");
+    CHECK_STR(kit_buf_cstr(&err), "to-err\n");
 
     /* NULL leaves a stream alone. */
-    sb_reset(&out);
-    CHECK(cmd_capture_ex(&c, &out, NULL));
-    CHECK_STR(sb_cstr(&out), "to-out\n");
+    kit_buf_reset(&out);
+    CHECK(kit_command_capture_split(&c, &out, NULL));
+    CHECK_STR(kit_buf_cstr(&out), "to-out\n");
 
-    sb_reset(&err);
-    CHECK(cmd_capture_ex(&c, NULL, &err));
-    CHECK_STR(sb_cstr(&err), "to-err\n");
+    kit_buf_reset(&err);
+    CHECK(kit_command_capture_split(&c, NULL, &err));
+    CHECK_STR(kit_buf_cstr(&err), "to-err\n");
 
-    /* The same builder for both is what cmd_capture_merged does. */
-    sb_reset(&out);
-    CHECK(cmd_capture_ex(&c, &out, &out));
-    CHECK(sv_contains(SV(sb_cstr(&out)), SV("to-out\n")));
-    CHECK(sv_contains(SV(sb_cstr(&out)), SV("to-err\n")));
+    /* The same builder for both is what kit_command_capture_merged does. */
+    kit_buf_reset(&out);
+    CHECK(kit_command_capture_split(&c, &out, &out));
+    CHECK(kit_str_contains(KIT_STR(kit_buf_cstr(&out)), KIT_STR("to-out\n")));
+    CHECK(kit_str_contains(KIT_STR(kit_buf_cstr(&out)), KIT_STR("to-err\n")));
 
     /* Output survives a failing child. */
-    sb_reset(&out); sb_reset(&err);
-    cmd_reset(&c);
-    cmd_extend(&c, "sh", "-c", "echo o; echo e >&2; exit 4", NULL);
-    CHECK(!cmd_capture_ex(&c, &out, &err));
-    CHECK_STR(sb_cstr(&out), "o\n");
-    CHECK_STR(sb_cstr(&err), "e\n");
+    kit_buf_reset(&out); kit_buf_reset(&err);
+    kit_command_reset(&c);
+    kit_command_push_all(&c, "sh", "-c", "echo o; echo e >&2; exit 4", NULL);
+    CHECK(!kit_command_capture_split(&c, &out, &err));
+    CHECK_STR(kit_buf_cstr(&out), "o\n");
+    CHECK_STR(kit_buf_cstr(&err), "e\n");
 
-    sb_free(&out); sb_free(&err);
-    cmd_free(&c);
+    kit_buf_free(&out); kit_buf_free(&err);
+    kit_command_free(&c);
 }
 
 /* The reason the two pipes are drained together. A child that fills both well
  * past the pipe buffer deadlocks anything that reads one to the end first:
  * it blocks writing to the pipe nobody is draining. 4 MiB against a 64 KiB
  * buffer leaves no doubt. */
-TEST(cmd_capture_ex_does_not_deadlock_on_a_full_pipe) {
-    Cmd c = {0};
-    cmd_extend(&c, "sh", "-c",
+TEST(command_capture_ex_does_not_deadlock_on_a_full_pipe) {
+    KitCommand c = {0};
+    kit_command_push_all(&c, "sh", "-c",
                "yes 'stdout line padding padding padding' | head -c 4000000; "
                "yes 'stderr line padding padding padding' | head -c 4000000 >&2",
                NULL);
 
-    StringBuilder out = {0}, err = {0};
-    Stopwatch sw = sw_start();
-    CHECK(cmd_capture_ex(&c, &out, &err));
-    double ms = sw_elapsed_ms(sw);
+    KitBuf out = {0}, err = {0};
+    KitTimer sw = kit_timer_start();
+    CHECK(kit_command_capture_split(&c, &out, &err));
+    double ms = kit_timer_ms(sw);
 
     CHECK_INT(out.count, 4000000);
     CHECK_INT(err.count, 4000000);
-    CHECK(sv_starts_with_cstr(SV(sb_cstr(&out)), "stdout line"));
-    CHECK(sv_starts_with_cstr(SV(sb_cstr(&err)), "stderr line"));
+    CHECK(kit_str_starts_with_cstr(KIT_STR(kit_buf_cstr(&out)), "stdout line"));
+    CHECK(kit_str_starts_with_cstr(KIT_STR(kit_buf_cstr(&err)), "stderr line"));
     if (!CHECK(ms < (UTEST_SANITIZED ? 30000.0 : 10000.0)))
         printf("      8 MiB took %.0f ms\n", ms);
 
-    sb_free(&out); sb_free(&err);
-    cmd_free(&c);
+    kit_buf_free(&out); kit_buf_free(&err);
+    kit_command_free(&c);
 }
 
-TEST(cmd_run_reports_the_exit_status) {
-    CHECK(cmd_run_args("true", NULL));
-    CHECK(!cmd_run_args("false", NULL));
-    CHECK(!cmd_run_args("no-such-binary-anywhere", NULL));
+TEST(command_run_reports_the_exit_status) {
+    CHECK(kit_command_run_args("true", NULL));
+    CHECK(!kit_command_run_args("false", NULL));
+    CHECK(!kit_command_run_args("no-such-binary-anywhere", NULL));
 }
 
-TEST(cmd_reset_keeps_the_allocation) {
-    Cmd c = {0};
-    cmd_extend(&c, "echo", "a", "b", NULL);
+TEST(command_reset_keeps_the_allocation) {
+    KitCommand c = {0};
+    kit_command_push_all(&c, "echo", "a", "b", NULL);
     CHECK_INT(c.count, 3);
     size_t cap = c.capacity;
 
-    cmd_reset(&c);
+    kit_command_reset(&c);
     CHECK_INT(c.count, 0);
     CHECK_INT(c.capacity, cap);
 
-    cmd_append(&c, "true");
-    CHECK(cmd_run(&c));
+    kit_command_push(&c, "true");
+    CHECK(kit_command_run(&c));
     CHECK_INT(c.count, 1);      /* the exec sentinel must not linger */
-    cmd_free(&c);
+    kit_command_free(&c);
 }
 
-TEST(cmd_run_async_runs_children_in_parallel) {
-    Cmd a = {0}, b = {0};
-    cmd_extend(&a, "sleep", "0.2", NULL);
-    cmd_extend(&b, "sleep", "0.2", NULL);
+TEST(command_run_async_runs_children_in_parallel) {
+    KitCommand a = {0}, b = {0};
+    kit_command_push_all(&a, "sleep", "0.2", NULL);
+    kit_command_push_all(&b, "sleep", "0.2", NULL);
 
-    Stopwatch sw = sw_start();
-    Proc pa = cmd_run_async(&a);
-    Proc pb = cmd_run_async(&b);
-    CHECK(proc_wait(pa));
-    CHECK(proc_wait(pb));
-    double ms = sw_elapsed_ms(sw);
+    KitTimer sw = kit_timer_start();
+    KitProcess pa = kit_command_spawn(&a);
+    KitProcess pb = kit_command_spawn(&b);
+    CHECK(kit_process_wait(pa));
+    CHECK(kit_process_wait(pb));
+    double ms = kit_timer_ms(sw);
 
     CHECK(ms >= 190.0);                  /* both really waited */
     CHECK(ms < (UTEST_SANITIZED ? 700.0 : 380.0));   /* but they overlapped */
 
-    cmd_free(&a);
-    cmd_free(&b);
+    kit_command_free(&a);
+    kit_command_free(&b);
 }
 #else /* _WIN32 */
 
 /* The Windows command paths would otherwise be compiled and never run. cmd.exe
  * stands in for the shell; the assertions avoid exact matching because cmd
  * emits CRLF and leaves a space before a redirect. */
-TEST(cmd_capture_on_windows) {
-    Cmd c = {0};
-    cmd_extend(&c, "cmd", "/c", "echo to-out& echo to-err 1>&2", NULL);
+TEST(command_capture_on_windows) {
+    KitCommand c = {0};
+    kit_command_push_all(&c, "cmd", "/c", "echo to-out& echo to-err 1>&2", NULL);
 
-    StringBuilder out = {0}, err = {0};
-    CHECK(cmd_capture_ex(&c, &out, &err));
+    KitBuf out = {0}, err = {0};
+    CHECK(kit_command_capture_split(&c, &out, &err));
 
     /* The point of two pipes: neither stream leaks into the other. */
-    CHECK(sv_contains(SV(sb_cstr(&out)), SV("to-out")));
-    CHECK(sv_contains(SV(sb_cstr(&err)), SV("to-err")));
-    CHECK(!sv_contains(SV(sb_cstr(&out)), SV("to-err")));
-    CHECK(!sv_contains(SV(sb_cstr(&err)), SV("to-out")));
+    CHECK(kit_str_contains(KIT_STR(kit_buf_cstr(&out)), KIT_STR("to-out")));
+    CHECK(kit_str_contains(KIT_STR(kit_buf_cstr(&err)), KIT_STR("to-err")));
+    CHECK(!kit_str_contains(KIT_STR(kit_buf_cstr(&out)), KIT_STR("to-err")));
+    CHECK(!kit_str_contains(KIT_STR(kit_buf_cstr(&err)), KIT_STR("to-out")));
 
-    sb_reset(&out);
-    CHECK(cmd_capture_merged(&c, &out));
-    CHECK(sv_contains(SV(sb_cstr(&out)), SV("to-out")));
-    CHECK(sv_contains(SV(sb_cstr(&out)), SV("to-err")));
+    kit_buf_reset(&out);
+    CHECK(kit_command_capture_merged(&c, &out));
+    CHECK(kit_str_contains(KIT_STR(kit_buf_cstr(&out)), KIT_STR("to-out")));
+    CHECK(kit_str_contains(KIT_STR(kit_buf_cstr(&out)), KIT_STR("to-err")));
 
-    sb_reset(&out);
-    CHECK(cmd_capture(&c, &out));
-    CHECK(sv_contains(SV(sb_cstr(&out)), SV("to-out")));
-    CHECK(!sv_contains(SV(sb_cstr(&out)), SV("to-err")));   /* passed through */
+    kit_buf_reset(&out);
+    CHECK(kit_command_capture(&c, &out));
+    CHECK(kit_str_contains(KIT_STR(kit_buf_cstr(&out)), KIT_STR("to-out")));
+    CHECK(!kit_str_contains(KIT_STR(kit_buf_cstr(&out)), KIT_STR("to-err")));   /* passed through */
 
-    sb_free(&out); sb_free(&err);
-    cmd_free(&c);
+    kit_buf_free(&out); kit_buf_free(&err);
+    kit_command_free(&c);
 }
 
 /* More than one pipe buffer on both streams at once, which is the case the
  * poll-free PeekNamedPipe loop exists for. */
-TEST(cmd_capture_on_windows_does_not_deadlock) {
-    Cmd c = {0};
-    cmd_extend(&c, "cmd", "/c",
+TEST(command_capture_on_windows_does_not_deadlock) {
+    KitCommand c = {0};
+    kit_command_push_all(&c, "cmd", "/c",
                "for /L %i in (1,1,4000) do @(echo out padding padding padding"
                "& echo err padding padding padding 1>&2)", NULL);
 
-    StringBuilder out = {0}, err = {0};
-    CHECK(cmd_capture_ex(&c, &out, &err));
+    KitBuf out = {0}, err = {0};
+    CHECK(kit_command_capture_split(&c, &out, &err));
     CHECK(out.count > 100000);
     CHECK(err.count > 100000);
 
-    sb_free(&out); sb_free(&err);
-    cmd_free(&c);
+    kit_buf_free(&out); kit_buf_free(&err);
+    kit_command_free(&c);
 }
 
-TEST(cmd_run_status_on_windows) {
-    CHECK(cmd_run_args("cmd", "/c", "exit 0", NULL));
-    CHECK(!cmd_run_args("cmd", "/c", "exit 3", NULL));
+TEST(command_run_status_on_windows) {
+    CHECK(kit_command_run_args("cmd", "/c", "exit 0", NULL));
+    CHECK(!kit_command_run_args("cmd", "/c", "exit 3", NULL));
 }
 
 #endif /* !_WIN32 */
 
 /* --- stopwatch ------------------------------------------------------------ */
 
-TEST(stopwatch_measures_forward) {
-    Stopwatch sw = sw_start();
+TEST(timer_measures_forward) {
+    KitTimer sw = kit_timer_start();
     volatile double sink = 0;
     for (int i = 0; i < 2000000; i++) sink += i;
-    UTILS_UNUSED(sink);
+    KIT_UNUSED(sink);
 
-    double ms = sw_elapsed_ms(sw);
+    double ms = kit_timer_ms(sw);
     CHECK(ms > 0.0);
-    CHECK_DBL(sw_elapsed_s(sw) * 1000.0, ms, 50.0);
-    CHECK(sw_elapsed_ms(sw) >= ms);    /* monotonic */
+    CHECK_DBL(kit_timer_s(sw) * 1000.0, ms, 50.0);
+    CHECK(kit_timer_ms(sw) >= ms);    /* monotonic */
 }
 
 /* --- maths ---------------------------------------------------------------- */
 
 TEST(scalar_helpers) {
-    CHECK_DBL(clampf(5.0f, 0.0f, 1.0f), 1.0f, 1e-6);
-    CHECK_DBL(clampf(-5.0f, 0.0f, 1.0f), 0.0f, 1e-6);
-    CHECK_DBL(clampd(0.5, 0.0, 1.0), 0.5, 1e-12);
-    CHECK_INT(clampi(42, 0, 10), 10);
+    CHECK_DBL(kit_clampf(5.0f, 0.0f, 1.0f), 1.0f, 1e-6);
+    CHECK_DBL(kit_clampf(-5.0f, 0.0f, 1.0f), 0.0f, 1e-6);
+    CHECK_DBL(kit_clampd(0.5, 0.0, 1.0), 0.5, 1e-12);
+    CHECK_INT(kit_clampi(42, 0, 10), 10);
 
-    CHECK_DBL(lerpf(0.0f, 10.0f, 0.25f), 2.5f, 1e-6);
-    CHECK_DBL(map_range(5.0f, 0.0f, 10.0f, 0.0f, 100.0f), 50.0f, 1e-4);
-    CHECK_DBL(map_range(5.0f, 3.0f, 3.0f, 7.0f, 9.0f), 7.0f, 1e-6);  /* zero span */
+    CHECK_DBL(kit_lerpf(0.0f, 10.0f, 0.25f), 2.5f, 1e-6);
+    CHECK_DBL(kit_remapf(5.0f, 0.0f, 10.0f, 0.0f, 100.0f), 50.0f, 1e-4);
+    CHECK_DBL(kit_remapf(5.0f, 3.0f, 3.0f, 7.0f, 9.0f), 7.0f, 1e-6);  /* zero span */
 
-    CHECK_INT(UTILS_MIN(3, 7), 3);
-    CHECK_INT(UTILS_MAX(3, 7), 7);
-    CHECK_DBL(DEG2RAD(180.0f), 3.14159265f, 1e-5);
-    CHECK_DBL(RAD2DEG(DEG2RAD(90.0f)), 90.0f, 1e-4);
+    CHECK_INT(KIT_MIN(3, 7), 3);
+    CHECK_INT(KIT_MAX(3, 7), 7);
+    CHECK_DBL(KIT_DEG2RAD(180.0f), 3.14159265f, 1e-5);
+    CHECK_DBL(KIT_RAD2DEG(KIT_DEG2RAD(90.0f)), 90.0f, 1e-4);
 }
 
 TEST(vector_helpers) {
-    Vec2 a = V2(3, 4);
-    CHECK_DBL(vec2_len(a), 5.0f, 1e-5);
-    CHECK_DBL(vec2_len(vec2_norm(a)), 1.0f, 1e-5);
-    CHECK_DBL(vec2_len(vec2_norm(V2(0, 0))), 0.0f, 1e-6);   /* no division by 0 */
-    CHECK_DBL(vec2_dot(V2(1, 0), V2(0, 1)), 0.0f, 1e-6);
-    CHECK_DBL(vec2_dist(V2(0, 0), V2(3, 4)), 5.0f, 1e-5);
-    CHECK_DBL(vec2_add(a, V2(1, 1)).x, 4.0f, 1e-6);
-    CHECK_DBL(vec2_sub(a, V2(1, 1)).y, 3.0f, 1e-6);
-    CHECK_DBL(vec2_mul(a, V2(2, 2)).x, 6.0f, 1e-6);
-    CHECK_DBL(vec2_scale(a, 2.0f).y, 8.0f, 1e-6);
+    KitVec2 a = KIT_VEC2(3, 4);
+    CHECK_DBL(kit_vec2_len(a), 5.0f, 1e-5);
+    CHECK_DBL(kit_vec2_len(kit_vec2_norm(a)), 1.0f, 1e-5);
+    CHECK_DBL(kit_vec2_len(kit_vec2_norm(KIT_VEC2(0, 0))), 0.0f, 1e-6);   /* no division by 0 */
+    CHECK_DBL(kit_vec2_dot(KIT_VEC2(1, 0), KIT_VEC2(0, 1)), 0.0f, 1e-6);
+    CHECK_DBL(kit_vec2_dist(KIT_VEC2(0, 0), KIT_VEC2(3, 4)), 5.0f, 1e-5);
+    CHECK_DBL(kit_vec2_add(a, KIT_VEC2(1, 1)).x, 4.0f, 1e-6);
+    CHECK_DBL(kit_vec2_sub(a, KIT_VEC2(1, 1)).y, 3.0f, 1e-6);
+    CHECK_DBL(kit_vec2_mul(a, KIT_VEC2(2, 2)).x, 6.0f, 1e-6);
+    CHECK_DBL(kit_vec2_scale(a, 2.0f).y, 8.0f, 1e-6);
 
-    Vec3 x = V3(1, 0, 0), y = V3(0, 1, 0);
-    Vec3 z = vec3_cross(x, y);
+    KitVec3 x = KIT_VEC3(1, 0, 0), y = KIT_VEC3(0, 1, 0);
+    KitVec3 z = kit_vec3_cross(x, y);
     CHECK_DBL(z.z, 1.0f, 1e-6);
-    CHECK_DBL(vec3_dot(x, y), 0.0f, 1e-6);
-    CHECK_DBL(vec3_len(V3(2, 3, 6)), 7.0f, 1e-5);
-    CHECK_DBL(vec3_len(vec3_norm(V3(2, 3, 6))), 1.0f, 1e-5);
-    CHECK_DBL(vec3_len(vec3_norm(V3(0, 0, 0))), 0.0f, 1e-6);
-    CHECK_DBL(vec3_add(x, y).y, 1.0f, 1e-6);
-    CHECK_DBL(vec3_sub(x, y).y, -1.0f, 1e-6);
-    CHECK_DBL(vec3_mul(V3(2, 3, 4), V3(2, 2, 2)).z, 8.0f, 1e-6);
-    CHECK_DBL(vec3_scale(V3(1, 2, 3), 3.0f).z, 9.0f, 1e-6);
+    CHECK_DBL(kit_vec3_dot(x, y), 0.0f, 1e-6);
+    CHECK_DBL(kit_vec3_len(KIT_VEC3(2, 3, 6)), 7.0f, 1e-5);
+    CHECK_DBL(kit_vec3_len(kit_vec3_norm(KIT_VEC3(2, 3, 6))), 1.0f, 1e-5);
+    CHECK_DBL(kit_vec3_len(kit_vec3_norm(KIT_VEC3(0, 0, 0))), 0.0f, 1e-6);
+    CHECK_DBL(kit_vec3_add(x, y).y, 1.0f, 1e-6);
+    CHECK_DBL(kit_vec3_sub(x, y).y, -1.0f, 1e-6);
+    CHECK_DBL(kit_vec3_mul(KIT_VEC3(2, 3, 4), KIT_VEC3(2, 2, 2)).z, 8.0f, 1e-6);
+    CHECK_DBL(kit_vec3_scale(KIT_VEC3(1, 2, 3), 3.0f).z, 9.0f, 1e-6);
 }
 
 int main(void) {
-    log_set_level(LOG_CRITICAL);
+    kit_log_set_level(KIT_LOG_CRITICAL);
     utest_begin("system");
-    RUN(opts_parse_every_supported_form);
-    RUN(opts_parse_grouped_short_flags);
-    RUN(opts_parse_positionals_and_double_dash);
-    RUN(opts_parse_rejects_bad_input);
-    RUN(opts_usage_prints_long_names_in_full);
-    RUN(args_shift_consumes_left_to_right);
+    RUN(cli_parse_every_supported_form);
+    RUN(cli_parse_grouped_short_flags);
+    RUN(cli_parse_positionals_and_double_dash);
+    RUN(cli_parse_rejects_bad_input);
+    RUN(cli_usage_prints_long_names_in_full);
+    RUN(cli_shift_consumes_left_to_right);
 #ifndef _WIN32
-    RUN(cmd_capture_collects_stdout);
-    RUN(cmd_capture_handles_output_larger_than_the_pipe_buffer);
-    RUN(cmd_capture_merged_interleaves_both_streams);
-    RUN(cmd_capture_ex_separates_the_streams);
-    RUN(cmd_capture_ex_does_not_deadlock_on_a_full_pipe);
-    RUN(cmd_run_reports_the_exit_status);
-    RUN(cmd_reset_keeps_the_allocation);
-    RUN(cmd_run_async_runs_children_in_parallel);
+    RUN(command_capture_collects_stdout);
+    RUN(command_capture_handles_output_larger_than_the_pipe_buffer);
+    RUN(command_capture_merged_interleaves_both_streams);
+    RUN(command_capture_ex_separates_the_streams);
+    RUN(command_capture_ex_does_not_deadlock_on_a_full_pipe);
+    RUN(command_run_reports_the_exit_status);
+    RUN(command_reset_keeps_the_allocation);
+    RUN(command_run_async_runs_children_in_parallel);
 #else
-    RUN(cmd_capture_on_windows);
-    RUN(cmd_capture_on_windows_does_not_deadlock);
-    RUN(cmd_run_status_on_windows);
+    RUN(command_capture_on_windows);
+    RUN(command_capture_on_windows_does_not_deadlock);
+    RUN(command_run_status_on_windows);
 #endif
-    RUN(stopwatch_measures_forward);
+    RUN(timer_measures_forward);
     RUN(scalar_helpers);
     RUN(vector_helpers);
     return utest_report();

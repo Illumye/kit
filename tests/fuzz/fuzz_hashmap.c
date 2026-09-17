@@ -5,8 +5,8 @@
  * test explores three cases of and a fuzzer explores thousands.
  */
 
-#define UTILS_IMPLEMENTATION
-#include "../../utils.h"
+#define KIT_IMPLEMENTATION
+#include "../../kit.h"
 #include "fuzz_input.h"
 
 #include <assert.h>
@@ -45,7 +45,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     for (int i = 0; i < POOL; i++) snprintf(keys[i], sizeof(keys[i]), "k%d", i);
     memset(ref, 0, sizeof(ref));
 
-    HashMap hm = {0};
+    KitMap hm = {0};
 
     while (fuzz_left(&in) >= 2) {
         unsigned op  = fuzz_u8(&in) % 5;
@@ -55,14 +55,14 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         switch (op) {
         case 0: case 1: {   /* set, weighted so the map actually fills */
             void *value = (void *)(uintptr_t)(idx + 1);
-            bool  is_new_mine = hm_set(&hm, key, value);
+            bool  is_new_mine = kit_map_set(&hm, key, value);
             bool  is_new_ref  = (ref_find(key) < 0);
             assert(is_new_mine == is_new_ref);
             ref[idx].key = key; ref[idx].value = value; ref[idx].live = true;
             break;
         }
         case 2: {           /* delete */
-            bool gone_mine = hm_delete(&hm, key);
+            bool gone_mine = kit_map_delete(&hm, key);
             bool gone_ref  = (ref_find(key) >= 0);
             assert(gone_mine == gone_ref);
             ref[idx].live = false;
@@ -70,12 +70,12 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         }
         case 3: {           /* lookup */
             int at = ref_find(key);
-            assert(hm_has(&hm, key) == (at >= 0));
-            assert(hm_get(&hm, key) == (at >= 0 ? ref[at].value : NULL));
+            assert(kit_map_has(&hm, key) == (at >= 0));
+            assert(kit_map_get(&hm, key) == (at >= 0 ? ref[at].value : NULL));
             break;
         }
         case 4:             /* reset, so the tombstone state is revisited */
-            hm_reset(&hm);
+            kit_map_reset(&hm);
             for (int i = 0; i < POOL; i++) ref[i].live = false;
             break;
         default: break;
@@ -88,7 +88,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     /* Every live key is reachable, and iteration visits each exactly once. */
     size_t visited = 0;
-    hm_foreach(&hm, e) {
+    kit_map_each(&hm, e) {
         int at = ref_find(e->key);
         assert(at >= 0);
         assert(e->value == ref[at].value);
@@ -97,8 +97,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     assert(visited == ref_count());
 
     for (int i = 0; i < POOL; i++)
-        if (ref[i].live) assert(hm_get(&hm, keys[i]) == ref[i].value);
+        if (ref[i].live) assert(kit_map_get(&hm, keys[i]) == ref[i].value);
 
-    hm_free(&hm);
+    kit_map_free(&hm);
     return 0;
 }

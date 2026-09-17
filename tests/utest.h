@@ -167,13 +167,13 @@ UTEST__UNUSED static bool utest__check_dbl(double got, double want, double eps,
 #define CHECK_DBL(got, want, eps) \
     utest__check_dbl((double)(got), (double)(want), (eps), #got, __FILE__, __LINE__)
 
-/* Available once utils.h has been included, for String_View comparisons. */
-#ifdef UTILS_H
-#define CHECK_SV(got, want_cstr)                                        \
-    utest__check_str(utest__sv_cstr(got), (want_cstr), #got,            \
+/* Available once kit.h has been included, for KitStr comparisons. */
+#ifdef KIT_H
+#define CHECK_KITSTR(got, want_cstr)                                        \
+    utest__check_str(utest__kitstr_cstr(got), (want_cstr), #got,            \
                      __FILE__, __LINE__)
 
-UTEST__UNUSED static const char *utest__sv_cstr(String_View sv) {
+UTEST__UNUSED static const char *utest__kitstr_cstr(KitStr sv) {
     static char buf[256];
     size_t n = sv.count < sizeof(buf) - 1 ? sv.count : sizeof(buf) - 1;
     if (sv.data) memcpy(buf, sv.data, n); else n = 0;

@@ -1,75 +1,75 @@
 /*
- * Arena allocator and hash map.
+ * KitArena allocator and hash map.
  * Includes the regression test for the tombstone-blind load factor.
  */
 
-#define UTILS_IMPLEMENTATION
-#include "../utils.h"
+#define KIT_IMPLEMENTATION
+#include "../kit.h"
 #include "utest.h"
 
 /* --- arena ---------------------------------------------------------------- */
 
 TEST(arena_allocates_aligned_zeroed_blocks) {
-    Arena a = arena_make(4096);
+    KitArena a = kit_arena_make(4096);
     CHECK(a.first != NULL);
-    CHECK_INT(arena_used(&a), 0);
-    CHECK_INT(arena_capacity(&a), 4096);
+    CHECK_INT(kit_arena_used(&a), 0);
+    CHECK_INT(kit_arena_capacity(&a), 4096);
 
-    char *one = arena_alloc(&a, 1);
-    if (!CHECK(one != NULL)) { arena_free(&a); return; }
+    char *one = kit_arena_alloc(&a, 1);
+    if (!CHECK(one != NULL)) { kit_arena_free(&a); return; }
     CHECK_INT(one[0], 0);                       /* freshly zeroed */
 
     /* A one-byte block must not leave the next one misaligned. */
-    void **ptr = arena_alloc(&a, sizeof(void *));
+    void **ptr = kit_arena_alloc(&a, sizeof(void *));
     CHECK_INT((uintptr_t)ptr % sizeof(max_align_t), 0);
     CHECK(*ptr == NULL);
 
-    int *nums = arena_alloc_array(&a, int, 16);
-    if (!CHECK(nums != NULL)) { arena_free(&a); return; }
+    int *nums = kit_arena_alloc_array(&a, int, 16);
+    if (!CHECK(nums != NULL)) { kit_arena_free(&a); return; }
     for (int i = 0; i < 16; i++) CHECK_INT(nums[i], 0);
-    CHECK(arena_used(&a) >= 1 + sizeof(void *) + 16 * sizeof(int));
+    CHECK(kit_arena_used(&a) >= 1 + sizeof(void *) + 16 * sizeof(int));
 
-    arena_free(&a);
+    kit_arena_free(&a);
     CHECK(a.first == NULL);
-    CHECK_INT(arena_capacity(&a), 0);
+    CHECK_INT(kit_arena_capacity(&a), 0);
 }
 
 TEST(arena_honours_over_alignment) {
-    Arena a = {0};
+    KitArena a = {0};
     for (size_t align = 1; align <= 256; align *= 2) {
-        arena_alloc(&a, 1);                     /* knock the offset askew */
-        void *p = arena_alloc_aligned(&a, 32, align);
+        kit_arena_alloc(&a, 1);                     /* knock the offset askew */
+        void *p = kit_arena_alloc_aligned(&a, 32, align);
         if (!CHECK(p != NULL)) break;
         if (!CHECK((uintptr_t)p % align == 0))
             printf("      align=%lu gave %p\n", (unsigned long)align, p);
     }
-    arena_free(&a);
+    kit_arena_free(&a);
 }
 
 /* A zero-initialised arena must work with no preparation at all. */
 TEST(arena_zero_initialised_grows_on_demand) {
-    Arena a = {0};
-    CHECK_INT(arena_capacity(&a), 0);
+    KitArena a = {0};
+    CHECK_INT(kit_arena_capacity(&a), 0);
 
-    char *p = arena_alloc(&a, 10);
+    char *p = kit_arena_alloc(&a, 10);
     CHECK(p != NULL);
-    CHECK(arena_capacity(&a) >= ARENA_REGION_SIZE);
-    arena_free(&a);
+    CHECK(kit_arena_capacity(&a) >= KIT_ARENA_REGION_SIZE);
+    kit_arena_free(&a);
 }
 
 /* The old arena aborted when full. It must now chain another region, and a
  * single allocation larger than the region size must still be served. */
 TEST(arena_chains_regions_instead_of_failing) {
-    Arena a = arena_make(1024);
-    CHECK_INT(arena_capacity(&a), 1024);
+    KitArena a = kit_arena_make(1024);
+    CHECK_INT(kit_arena_capacity(&a), 1024);
 
     char *blocks[64];
     for (int i = 0; i < 64; i++) {
-        blocks[i] = arena_alloc(&a, 100);       /* 6400 bytes into 1024 */
+        blocks[i] = kit_arena_alloc(&a, 100);       /* 6400 bytes into 1024 */
         if (!CHECK(blocks[i] != NULL)) break;
         memset(blocks[i], 'a' + (i % 26), 100);
     }
-    CHECK(arena_capacity(&a) > 1024);
+    CHECK(kit_arena_capacity(&a) > 1024);
 
     /* Earlier blocks must survive the chain growing. */
     int corrupted = 0;
@@ -78,82 +78,82 @@ TEST(arena_chains_regions_instead_of_failing) {
             if (blocks[i][j] != 'a' + (i % 26)) corrupted++;
     CHECK_INT(corrupted, 0);
 
-    char *huge = arena_alloc(&a, 100000);       /* bigger than the hint */
+    char *huge = kit_arena_alloc(&a, 100000);       /* bigger than the hint */
     if (CHECK(huge != NULL)) {
         memset(huge, 1, 100000);
         CHECK_INT(huge[99999], 1);
     }
-    arena_free(&a);
+    kit_arena_free(&a);
 }
 
 TEST(arena_reset_reuses_the_regions) {
-    Arena a = arena_make(1024);
-    char *first = arena_alloc(&a, 64);
+    KitArena a = kit_arena_make(1024);
+    char *first = kit_arena_alloc(&a, 64);
     memset(first, 'x', 64);
-    for (int i = 0; i < 100; i++) arena_alloc(&a, 100);   /* force a chain */
-    size_t capacity = arena_capacity(&a);
+    for (int i = 0; i < 100; i++) kit_arena_alloc(&a, 100);   /* force a chain */
+    size_t capacity = kit_arena_capacity(&a);
 
-    arena_reset(&a);
-    CHECK_INT(arena_used(&a), 0);
-    CHECK_INT(arena_capacity(&a), capacity);    /* regions kept, not freed */
+    kit_arena_reset(&a);
+    CHECK_INT(kit_arena_used(&a), 0);
+    CHECK_INT(kit_arena_capacity(&a), capacity);    /* regions kept, not freed */
 
-    char *again = arena_alloc(&a, 64);
+    char *again = kit_arena_alloc(&a, 64);
     CHECK(again == first);                      /* same block handed out */
     CHECK_INT(again[0], 0);                     /* and re-zeroed */
-    arena_free(&a);
+    kit_arena_free(&a);
 }
 
 TEST(arena_mark_and_rewind) {
-    Arena a = arena_make(256);
+    KitArena a = kit_arena_make(256);
 
-    char *keep = arena_strdup(&a, "kept");
-    Arena_Mark mark = arena_mark(&a);
-    size_t used_at_mark = arena_used(&a);
+    char *keep = kit_arena_strdup(&a, "kept");
+    KitArenaMark mark = kit_arena_mark(&a);
+    size_t used_at_mark = kit_arena_used(&a);
 
-    for (int i = 0; i < 50; i++) arena_sprintf(&a, "scratch %d", i);
-    CHECK(arena_used(&a) > used_at_mark);
+    for (int i = 0; i < 50; i++) kit_arena_printf(&a, "scratch %d", i);
+    CHECK(kit_arena_used(&a) > used_at_mark);
 
-    arena_rewind(&a, mark);
-    CHECK_INT(arena_used(&a), used_at_mark);
+    kit_arena_rewind(&a, mark);
+    CHECK_INT(kit_arena_used(&a), used_at_mark);
     CHECK_STR(keep, "kept");                    /* untouched by the rewind */
 
     /* The reclaimed space is handed out again. */
-    char *reused = arena_alloc(&a, 8);
-    CHECK(arena_used(&a) <= used_at_mark + 8 + sizeof(max_align_t));
+    char *reused = kit_arena_alloc(&a, 8);
+    CHECK(kit_arena_used(&a) <= used_at_mark + 8 + sizeof(max_align_t));
     CHECK(reused != NULL);
 
     /* A mark taken from an empty arena rewinds everything. */
-    Arena b = {0};
-    Arena_Mark empty = arena_mark(&b);
-    arena_alloc(&b, 100);
-    arena_rewind(&b, empty);
-    CHECK_INT(arena_used(&b), 0);
+    KitArena b = {0};
+    KitArenaMark empty = kit_arena_mark(&b);
+    kit_arena_alloc(&b, 100);
+    kit_arena_rewind(&b, empty);
+    CHECK_INT(kit_arena_used(&b), 0);
 
-    arena_free(&a);
-    arena_free(&b);
+    kit_arena_free(&a);
+    kit_arena_free(&b);
 }
 
 TEST(arena_string_helpers) {
-    Arena a = {0};
-    CHECK_STR(arena_strdup(&a, "hello"), "hello");
-    CHECK_STR(arena_strdup(&a, ""), "");
-    CHECK_STR(arena_strdup_n(&a, "truncated", 4), "trun");
-    CHECK_STR(arena_sprintf(&a, "%s-%d-%.2f", "x", 42, 1.5), "x-42-1.50");
+    KitArena a = {0};
+    CHECK_STR(kit_arena_strdup(&a, "hello"), "hello");
+    CHECK_STR(kit_arena_strdup(&a, ""), "");
+    CHECK_STR(kit_arena_strndup(&a, "truncated", 4), "trun");
+    CHECK_STR(kit_arena_printf(&a, "%s-%d-%.2f", "x", 42, 1.5), "x-42-1.50");
 
     /* Longer than a region, to exercise the growth path. */
-    char *big = arena_sprintf(&a, "%0*d", 100000, 7);
+    char *big = kit_arena_printf(&a, "%0*d", 100000, 7);
     CHECK_INT(strlen(big), 100000);
-    arena_free(&a);
+    kit_arena_free(&a);
 }
 
 /* --- temporary allocator -------------------------------------------------- */
 
-TEST(temp_allocator_basics) {
-    temp_reset();
+TEST(scratch_allocator_basics) {
+    kit_scratch_reset();
 
-    char *a = temp_sprintf("%s/%s.o", "build", "main");
-    char *b = temp_strdup("literal");
-    int  *n = temp_alloc(sizeof(int) * 4);
+    char *a = kit_scratch_printf("%s/%s.o", "build", "main");
+    char *b = kit_scratch_strdup("literal");
+    int  *n = kit_scratch_alloc(sizeof(int) * 4);
 
     CHECK_STR(a, "build/main.o");
     CHECK_STR(b, "literal");
@@ -162,44 +162,44 @@ TEST(temp_allocator_basics) {
     /* Distinct calls must not overlap. */
     CHECK(a != b);
     CHECK_STR(a, "build/main.o");
-    temp_reset();
+    kit_scratch_reset();
 }
 
-TEST(temp_reset_reclaims_everything) {
-    temp_reset();
-    for (int i = 0; i < 10000; i++) temp_sprintf("path/to/file-%d.c", i);
+TEST(scratch_reset_reclaims_everything) {
+    kit_scratch_reset();
+    for (int i = 0; i < 10000; i++) kit_scratch_printf("path/to/file-%d.c", i);
 
-    Arena_Mark before = temp_mark();
+    KitArenaMark before = kit_scratch_mark();
     CHECK(before.region != NULL);
 
-    temp_reset();
-    char *after = temp_strdup("x");
+    kit_scratch_reset();
+    char *after = kit_scratch_strdup("x");
     CHECK(after != NULL);
     CHECK_STR(after, "x");
-    temp_reset();
+    kit_scratch_reset();
 }
 
-TEST(temp_mark_and_rewind_nest) {
-    temp_reset();
-    char *outer = temp_strdup("outer");
+TEST(scratch_mark_and_rewind_nest) {
+    kit_scratch_reset();
+    char *outer = kit_scratch_strdup("outer");
 
-    Arena_Mark m1 = temp_mark();
-    char *inner = temp_sprintf("inner %d", 1);
+    KitArenaMark m1 = kit_scratch_mark();
+    char *inner = kit_scratch_printf("inner %d", 1);
     CHECK_STR(inner, "inner 1");
 
-    Arena_Mark m2 = temp_mark();
-    for (int i = 0; i < 1000; i++) temp_sprintf("deep %d", i);
-    temp_rewind(m2);
+    KitArenaMark m2 = kit_scratch_mark();
+    for (int i = 0; i < 1000; i++) kit_scratch_printf("deep %d", i);
+    kit_scratch_rewind(m2);
     CHECK_STR(inner, "inner 1");                /* the inner scope survives */
     CHECK_STR(outer, "outer");
 
-    temp_rewind(m1);
+    kit_scratch_rewind(m1);
     CHECK_STR(outer, "outer");                  /* and so does the outer one */
 
-    temp_reset();
-    temp_free();                                /* releasing must be safe */
-    CHECK_STR(temp_strdup("after free"), "after free");
-    temp_reset();
+    kit_scratch_reset();
+    kit_scratch_free();                                /* releasing must be safe */
+    CHECK_STR(kit_scratch_strdup("after free"), "after free");
+    kit_scratch_reset();
 }
 
 /* Each thread must get its own regions: no pointer handed out to one thread
@@ -207,7 +207,7 @@ TEST(temp_mark_and_rewind_nest) {
  * others hammering theirs.
  *
  * The comparison has to happen while every range is still live. Once a thread
- * calls temp_free its addresses go back to malloc, which will hand the same
+ * calls kit_scratch_free its addresses go back to malloc, which will hand the same
  * ones to the next thread, and an overlap then proves nothing. Hence the
  * barrier: allocate, wait for everyone, compare, only then release. */
 #ifndef _WIN32
@@ -241,7 +241,7 @@ static void *tl_worker(void *arg) {
     r->high = 0;
 
     for (int i = 0; i < TL_STRINGS; i++) {
-        char     *p = temp_sprintf("thread-%d-item-%d", r->id, i);
+        char     *p = kit_scratch_printf("thread-%d-item-%d", r->id, i);
         uintptr_t a = (uintptr_t)p;
         if (a < r->low)              r->low  = a;
         if (a + strlen(p) > r->high) r->high = a + strlen(p);
@@ -257,11 +257,11 @@ static void *tl_worker(void *arg) {
     while (!r->gate->released) pthread_cond_wait(&r->gate->cv, &r->gate->lock);
     pthread_mutex_unlock(&r->gate->lock);
 
-    temp_free();   /* a worker releases its own regions */
+    kit_scratch_free();   /* a worker releases its own regions */
     return NULL;
 }
 
-TEST(temp_allocator_is_per_thread) {
+TEST(scratch_allocator_is_per_thread) {
     static TlResult results[TL_THREADS];
     pthread_t       threads[TL_THREADS];
     TlGate          gate = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER,
@@ -297,84 +297,84 @@ TEST(temp_allocator_is_per_thread) {
 
 /* --- hash map ------------------------------------------------------------- */
 
-TEST(hm_set_get_delete) {
-    HashMap hm = {0};
+TEST(map_set_get_delete) {
+    KitMap hm = {0};
     int a = 1, b = 2;
 
-    CHECK(hm_set(&hm, "alpha", &a));      /* true: new key */
-    CHECK(hm_set(&hm, "beta", &b));
-    CHECK(!hm_set(&hm, "alpha", &b));     /* false: update */
+    CHECK(kit_map_set(&hm, "alpha", &a));      /* true: new key */
+    CHECK(kit_map_set(&hm, "beta", &b));
+    CHECK(!kit_map_set(&hm, "alpha", &b));     /* false: update */
     CHECK_INT(hm.count, 2);
 
-    CHECK(hm_get(&hm, "alpha") == &b);
-    CHECK(hm_get(&hm, "beta") == &b);
-    CHECK(hm_get(&hm, "absent") == NULL);
-    CHECK(hm_has(&hm, "alpha"));
-    CHECK(!hm_has(&hm, "absent"));
+    CHECK(kit_map_get(&hm, "alpha") == &b);
+    CHECK(kit_map_get(&hm, "beta") == &b);
+    CHECK(kit_map_get(&hm, "absent") == NULL);
+    CHECK(kit_map_has(&hm, "alpha"));
+    CHECK(!kit_map_has(&hm, "absent"));
 
-    CHECK(hm_delete(&hm, "alpha"));
-    CHECK(!hm_delete(&hm, "alpha"));      /* already gone */
+    CHECK(kit_map_delete(&hm, "alpha"));
+    CHECK(!kit_map_delete(&hm, "alpha"));      /* already gone */
     CHECK_INT(hm.count, 1);
-    CHECK(!hm_has(&hm, "alpha"));
-    CHECK(hm_has(&hm, "beta"));           /* the tombstone must not hide it */
+    CHECK(!kit_map_has(&hm, "alpha"));
+    CHECK(kit_map_has(&hm, "beta"));           /* the tombstone must not hide it */
 
-    hm_free(&hm);
+    kit_map_free(&hm);
     CHECK_INT(hm.capacity, 0);
 }
 
-TEST(hm_on_an_empty_map_is_safe) {
-    HashMap hm = {0};
-    CHECK(hm_get(&hm, "x") == NULL);
-    CHECK(!hm_has(&hm, "x"));
-    CHECK(!hm_delete(&hm, "x"));
-    hm_free(&hm);
+TEST(map_on_an_empty_map_is_safe) {
+    KitMap hm = {0};
+    CHECK(kit_map_get(&hm, "x") == NULL);
+    CHECK(!kit_map_has(&hm, "x"));
+    CHECK(!kit_map_delete(&hm, "x"));
+    kit_map_free(&hm);
 }
 
-TEST(hm_stores_null_values) {
-    HashMap hm = {0};
-    hm_set(&hm, "key", NULL);
-    CHECK(hm_get(&hm, "key") == NULL);
-    CHECK(hm_has(&hm, "key"));            /* presence is not value != NULL */
-    hm_free(&hm);
+TEST(map_stores_null_values) {
+    KitMap hm = {0};
+    kit_map_set(&hm, "key", NULL);
+    CHECK(kit_map_get(&hm, "key") == NULL);
+    CHECK(kit_map_has(&hm, "key"));            /* presence is not value != NULL */
+    kit_map_free(&hm);
 }
 
-TEST(hm_grows_and_keeps_every_entry) {
+TEST(map_grows_and_keeps_every_entry) {
     enum { N = 10000 };
     static char keys[N][16];
-    HashMap hm = {0};
+    KitMap hm = {0};
 
     for (int i = 0; i < N; i++) {
         snprintf(keys[i], sizeof(keys[i]), "key%d", i);
-        hm_set(&hm, keys[i], (void *)(intptr_t)(i + 1));
+        kit_map_set(&hm, keys[i], (void *)(intptr_t)(i + 1));
     }
     CHECK_INT(hm.count, N);
 
     int wrong = 0;
     for (int i = 0; i < N; i++)
-        if (hm_get(&hm, keys[i]) != (void *)(intptr_t)(i + 1)) wrong++;
+        if (kit_map_get(&hm, keys[i]) != (void *)(intptr_t)(i + 1)) wrong++;
     CHECK_INT(wrong, 0);
 
     int visited = 0;
-    hm_foreach(&hm, e) { CHECK(e->key != NULL); visited++; }
+    kit_map_each(&hm, e) { CHECK(e->key != NULL); visited++; }
     CHECK_INT(visited, N);
 
-    hm_free(&hm);
+    kit_map_free(&hm);
 }
 
-TEST(hm_reset_keeps_the_allocation) {
-    HashMap hm = {0};
+TEST(map_reset_keeps_the_allocation) {
+    KitMap hm = {0};
     int v = 1;
-    hm_set(&hm, "a", &v);
+    kit_map_set(&hm, "a", &v);
     size_t cap = hm.capacity;
 
-    hm_reset(&hm);
+    kit_map_reset(&hm);
     CHECK_INT(hm.count, 0);
     CHECK_INT(hm.capacity, cap);
-    CHECK(!hm_has(&hm, "a"));
+    CHECK(!kit_map_has(&hm, "a"));
 
-    hm_set(&hm, "b", &v);
-    CHECK(hm_has(&hm, "b"));
-    hm_free(&hm);
+    kit_map_set(&hm, "b", &v);
+    CHECK(kit_map_has(&hm, "b"));
+    kit_map_free(&hm);
 }
 
 /* Regression: the load factor counted live entries only, so a set/delete
@@ -383,27 +383,27 @@ TEST(hm_reset_keeps_the_allocation) {
  *
  * A sliding window keeps a constant population, so the capacity must stay
  * bounded and the run must stay fast. Before the fix this took ~550 ms. */
-TEST(hm_sliding_window_does_not_degrade) {
+TEST(map_sliding_window_does_not_degrade) {
     enum { LIVE = 20000, TOTAL = 200000 };
     static char keys[TOTAL][16];
     for (int i = 0; i < TOTAL; i++) snprintf(keys[i], sizeof(keys[i]), "key%d", i);
 
-    HashMap hm = {0};
-    for (int i = 0; i < LIVE; i++) hm_set(&hm, keys[i], (void *)(intptr_t)1);
+    KitMap hm = {0};
+    for (int i = 0; i < LIVE; i++) kit_map_set(&hm, keys[i], (void *)(intptr_t)1);
 
     size_t cap_when_full = hm.capacity;
-    Stopwatch sw = sw_start();
+    KitTimer sw = kit_timer_start();
     for (int i = LIVE; i < TOTAL; i++) {
-        hm_set(&hm, keys[i], (void *)(intptr_t)1);
-        hm_delete(&hm, keys[i - LIVE]);
+        kit_map_set(&hm, keys[i], (void *)(intptr_t)1);
+        kit_map_delete(&hm, keys[i - LIVE]);
     }
-    double ms = sw_elapsed_ms(sw);
+    double ms = kit_timer_ms(sw);
 
     CHECK_INT(hm.count, LIVE);
     CHECK_INT(hm.capacity, cap_when_full);   /* rehashed in place, never grown */
     CHECK(hm.used <= hm.capacity);
-    CHECK(hm_has(&hm, keys[TOTAL - 1]));
-    CHECK(!hm_has(&hm, keys[0]));
+    CHECK(kit_map_has(&hm, keys[TOTAL - 1]));
+    CHECK(!kit_map_has(&hm, keys[0]));
 
     /* Generous bound: the point is the order of magnitude, not the machine.
      * The unfixed version needed ~12 s here, the fixed one ~80 ms. */
@@ -411,11 +411,11 @@ TEST(hm_sliding_window_does_not_degrade) {
     if (!CHECK(ms < budget))
         printf("      sliding window took %.0f ms (budget %.0f)\n", ms, budget);
 
-    hm_free(&hm);
+    kit_map_free(&hm);
 }
 
 int main(void) {
-    log_set_level(LOG_CRITICAL);
+    kit_log_set_level(KIT_LOG_CRITICAL);
     utest_begin("memory");
     RUN(arena_allocates_aligned_zeroed_blocks);
     RUN(arena_honours_over_alignment);
@@ -424,17 +424,17 @@ int main(void) {
     RUN(arena_reset_reuses_the_regions);
     RUN(arena_mark_and_rewind);
     RUN(arena_string_helpers);
-    RUN(temp_allocator_basics);
-    RUN(temp_reset_reclaims_everything);
-    RUN(temp_mark_and_rewind_nest);
+    RUN(scratch_allocator_basics);
+    RUN(scratch_reset_reclaims_everything);
+    RUN(scratch_mark_and_rewind_nest);
 #ifndef _WIN32
-    RUN(temp_allocator_is_per_thread);
+    RUN(scratch_allocator_is_per_thread);
 #endif
-    RUN(hm_set_get_delete);
-    RUN(hm_on_an_empty_map_is_safe);
-    RUN(hm_stores_null_values);
-    RUN(hm_grows_and_keeps_every_entry);
-    RUN(hm_reset_keeps_the_allocation);
-    RUN(hm_sliding_window_does_not_degrade);
+    RUN(map_set_get_delete);
+    RUN(map_on_an_empty_map_is_safe);
+    RUN(map_stores_null_values);
+    RUN(map_grows_and_keeps_every_entry);
+    RUN(map_reset_keeps_the_allocation);
+    RUN(map_sliding_window_does_not_degrade);
     return utest_report();
 }

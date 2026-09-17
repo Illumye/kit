@@ -1,10 +1,10 @@
 /*
  * Files, logging and dynamic arrays.
- * Includes the regression tests for the read_file and write_file defects.
+ * Includes the regression tests for the kit_fs_read and kit_fs_write defects.
  */
 
-#define UTILS_IMPLEMENTATION
-#include "../utils.h"
+#define KIT_IMPLEMENTATION
+#include "../kit.h"
 #include "utest.h"
 
 #define TMP_TXT "utest-tmp-file.txt"
@@ -16,19 +16,19 @@ TEST(log_level_filters_lower_levels) {
     FILE *fp = fopen(TMP_TXT, "w+");
     if (!CHECK(fp != NULL)) return;
 
-    log_set_output(fp);
-    log_set_level(LOG_WARNING);
-    LOG(LOG_DEBUG, "invisible");
-    LOG(LOG_INFO,  "invisible");
-    LOG(LOG_ERROR, "visible");
+    kit_log_set_output(fp);
+    kit_log_set_level(KIT_LOG_WARN);
+    KIT_LOG(KIT_LOG_DEBUG, "invisible");
+    KIT_LOG(KIT_LOG_INFO,  "invisible");
+    KIT_LOG(KIT_LOG_ERROR, "visible");
     fflush(fp);
 
     long size = ftell(fp);
     fclose(fp);
-    log_set_output(NULL);
-    log_set_level(LOG_CRITICAL);
+    kit_log_set_output(NULL);
+    kit_log_set_level(KIT_LOG_CRITICAL);
 
-    char *content = read_file(TMP_TXT);
+    char *content = kit_fs_read(TMP_TXT);
     if (!CHECK(content != NULL)) return;
     CHECK(strstr(content, "visible")   != NULL);
     CHECK(strstr(content, "invisible") == NULL);
@@ -43,15 +43,15 @@ TEST(log_omits_ansi_codes_when_not_a_tty) {
     FILE *fp = fopen(TMP_TXT, "w");
     if (!CHECK(fp != NULL)) return;
 
-    log_set_output(fp);
-    log_set_level(LOG_ERROR);
-    log_set_color(LOG_COLOR_AUTO);
-    LOG(LOG_ERROR, "plain text please");
+    kit_log_set_output(fp);
+    kit_log_set_level(KIT_LOG_ERROR);
+    kit_log_set_color(KIT_LOG_COLOR_AUTO);
+    KIT_LOG(KIT_LOG_ERROR, "plain text please");
     fclose(fp);
-    log_set_output(NULL);
-    log_set_level(LOG_CRITICAL);
+    kit_log_set_output(NULL);
+    kit_log_set_level(KIT_LOG_CRITICAL);
 
-    char *content = read_file(TMP_TXT);
+    char *content = kit_fs_read(TMP_TXT);
     if (!CHECK(content != NULL)) return;
     CHECK(strchr(content, '\x1b') == NULL);
     CHECK(strstr(content, "plain text please") != NULL);
@@ -60,63 +60,63 @@ TEST(log_omits_ansi_codes_when_not_a_tty) {
     /* ALWAYS still forces colour on a non-tty, for pagers that render it. */
     fp = fopen(TMP_TXT, "w");
     if (!CHECK(fp != NULL)) return;
-    log_set_output(fp);
-    log_set_level(LOG_ERROR);
-    log_set_color(LOG_COLOR_ALWAYS);
-    LOG(LOG_ERROR, "coloured");
+    kit_log_set_output(fp);
+    kit_log_set_level(KIT_LOG_ERROR);
+    kit_log_set_color(KIT_LOG_COLOR_ALWAYS);
+    KIT_LOG(KIT_LOG_ERROR, "coloured");
     fclose(fp);
-    log_set_output(NULL);
-    log_set_level(LOG_CRITICAL);
+    kit_log_set_output(NULL);
+    kit_log_set_level(KIT_LOG_CRITICAL);
 
-    content = read_file(TMP_TXT);
+    content = kit_fs_read(TMP_TXT);
     if (!CHECK(content != NULL)) return;
     CHECK(strchr(content, '\x1b') != NULL);
     free(content);
 
-    log_set_color(LOG_COLOR_AUTO);
+    kit_log_set_color(KIT_LOG_COLOR_AUTO);
     remove(TMP_TXT);
 }
 
-/* Reads back what one LOG call wrote, with colour off. Binary mode, because
+/* Reads back what one KIT_LOG call wrote, with colour off. Binary mode, because
  * Windows text mode would turn every \n into \r\n and the comparisons below
  * are byte exact. */
-static char *log_once(unsigned fields, LogLevel level, const char *message) {
+static char *log_once(unsigned fields, KitLogLevel level, const char *message) {
     FILE *fp = fopen(TMP_TXT, "wb");
     if (!fp) return NULL;
 
-    log_set_output(fp);
-    log_set_level(LOG_DEBUG);
-    log_set_color(LOG_COLOR_NEVER);
-    log_set_fields(fields);
-    utils_log_impl(level, "src.c", 7, "%s", message);
+    kit_log_set_output(fp);
+    kit_log_set_level(KIT_LOG_DEBUG);
+    kit_log_set_color(KIT_LOG_COLOR_NEVER);
+    kit_log_set_fields(fields);
+    kit__log(level, "src.c", 7, "%s", message);
     fclose(fp);
 
-    log_set_output(NULL);
-    log_set_level(LOG_CRITICAL);
-    log_set_fields(LOG_FIELDS_DEFAULT);
-    return read_file(TMP_TXT);
+    kit_log_set_output(NULL);
+    kit_log_set_level(KIT_LOG_CRITICAL);
+    kit_log_set_fields(KIT_LOG_FIELDS_DEFAULT);
+    return kit_fs_read(TMP_TXT);
 }
 
 TEST(log_fields_select_the_prefix) {
-    char *line = log_once(LOG_FIELDS_NONE, LOG_INFO, "bare");
+    char *line = log_once(KIT_LOG_FIELDS_NONE, KIT_LOG_INFO, "bare");
     if (CHECK(line != NULL)) {
         CHECK_STR(line, "bare\n");          /* nothing but the message */
         free(line);
     }
 
-    line = log_once(LOG_FIELD_LEVEL, LOG_WARNING, "msg");
+    line = log_once(KIT_LOG_FIELD_LEVEL, KIT_LOG_WARN, "msg");
     if (CHECK(line != NULL)) {
         CHECK_STR(line, "[WARN] msg\n");
         free(line);
     }
 
-    line = log_once(LOG_FIELD_LOCATION, LOG_INFO, "msg");
+    line = log_once(KIT_LOG_FIELD_LOCATION, KIT_LOG_INFO, "msg");
     if (CHECK(line != NULL)) {
         CHECK_STR(line, "[src.c:7] msg\n");
         free(line);
     }
 
-    line = log_once(LOG_FIELD_USER, LOG_INFO, "msg");
+    line = log_once(KIT_LOG_FIELD_USER, KIT_LOG_INFO, "msg");
     if (CHECK(line != NULL)) {
         CHECK(strstr(line, "msg") != NULL);
         CHECK_INT(line[0], '[');
@@ -124,7 +124,7 @@ TEST(log_fields_select_the_prefix) {
         free(line);
     }
 
-    line = log_once(LOG_FIELD_DATE, LOG_INFO, "msg");
+    line = log_once(KIT_LOG_FIELD_DATE, KIT_LOG_INFO, "msg");
     if (CHECK(line != NULL)) {
         CHECK_INT(strlen(line), strlen("[2026-09-12 (Sat)] msg\n"));
         CHECK(strstr(line, "-") != NULL);
@@ -132,7 +132,7 @@ TEST(log_fields_select_the_prefix) {
     }
 
     /* The default must stay exactly what it has always been. */
-    line = log_once(LOG_FIELDS_DEFAULT, LOG_ERROR, "msg");
+    line = log_once(KIT_LOG_FIELDS_DEFAULT, KIT_LOG_ERROR, "msg");
     if (CHECK(line != NULL)) {
         CHECK_INT(strlen(line), strlen("[14:05:42] [ERROR] [src.c:7] msg\n"));
         CHECK(strstr(line, "[ERROR] [src.c:7] msg") != NULL);
@@ -145,30 +145,30 @@ TEST(log_field_count_numbers_the_records) {
     FILE *fp = fopen(TMP_TXT, "w");
     if (!CHECK(fp != NULL)) return;
 
-    log_set_output(fp);
-    log_set_level(LOG_DEBUG);
-    log_set_color(LOG_COLOR_NEVER);
-    log_set_fields(LOG_FIELD_COUNT);
+    kit_log_set_output(fp);
+    kit_log_set_level(KIT_LOG_DEBUG);
+    kit_log_set_color(KIT_LOG_COLOR_NEVER);
+    kit_log_set_fields(KIT_LOG_FIELD_COUNT);
 
     unsigned long long first = 0;
-    for (int i = 0; i < 3; i++) LOG(LOG_INFO, "tick");
+    for (int i = 0; i < 3; i++) KIT_LOG(KIT_LOG_INFO, "tick");
     fclose(fp);
-    log_set_output(NULL);
-    log_set_level(LOG_CRITICAL);
-    log_set_fields(LOG_FIELDS_DEFAULT);
+    kit_log_set_output(NULL);
+    kit_log_set_level(KIT_LOG_CRITICAL);
+    kit_log_set_fields(KIT_LOG_FIELDS_DEFAULT);
 
-    char *text = read_file(TMP_TXT);
+    char *text = kit_fs_read(TMP_TXT);
     if (!CHECK(text != NULL)) return;
 
     /* Consecutive, whatever the counter started at. */
-    String_View rest = SV(text), line;
+    KitStr rest = KIT_STR(text), line;
     int seen = 0;
-    while (sv_try_chop_by_delim(&rest, '\n', &line)) {
+    while (kit_str_next(&rest, '\n', &line)) {
         if (line.count == 0) continue;
         uint64_t n = 0;
-        String_View digits = sv_chop_by_delim(&line, ']');
-        sv_chop_left(&digits, 1);            /* drop the '[', in place */
-        if (!CHECK(sv_to_u64(digits, &n))) break;
+        KitStr digits = kit_str_cut(&line, ']');
+        kit_str_take(&digits, 1);            /* drop the '[', in place */
+        if (!CHECK(kit_str_to_u64(digits, &n))) break;
         if (seen == 0) first = n;
         else           CHECK_INT(n, first + (unsigned long long)seen);
         seen++;
@@ -181,25 +181,25 @@ TEST(log_field_count_numbers_the_records) {
 
 /* --- files ---------------------------------------------------------------- */
 
-TEST(write_then_read_roundtrip) {
+TEST(fs_write_then_read_roundtrip) {
     const char *payload = "hello\nworld\n";
-    CHECK(write_file(TMP_TXT, payload, strlen(payload)));
-    CHECK_INT(file_size(TMP_TXT), (int64_t)strlen(payload));
-    CHECK(file_exists(TMP_TXT));
+    CHECK(kit_fs_write(TMP_TXT, payload, strlen(payload)));
+    CHECK_INT(kit_fs_size(TMP_TXT), (int64_t)strlen(payload));
+    CHECK(kit_fs_is_file(TMP_TXT));
 
-    char *back = read_file(TMP_TXT);
+    char *back = kit_fs_read(TMP_TXT);
     if (!CHECK(back != NULL)) return;
     CHECK_STR(back, payload);
     free(back);
     remove(TMP_TXT);
 }
 
-TEST(read_file_reports_size_and_keeps_embedded_nuls) {
+TEST(fs_read_reports_size_and_keeps_embedded_nuls) {
     const char blob[] = { 'a', '\0', 'b', '\0', '\0', 'c' };
-    CHECK(write_file(TMP_BIN, blob, sizeof(blob)));
+    CHECK(kit_fs_write(TMP_BIN, blob, sizeof(blob)));
 
     size_t n = 0;
-    char *back = read_file_ex(TMP_BIN, &n);
+    char *back = kit_fs_read_sized(TMP_BIN, &n);
     if (!CHECK(back != NULL)) return;
     CHECK_INT(n, sizeof(blob));
     CHECK(memcmp(back, blob, sizeof(blob)) == 0);
@@ -208,10 +208,10 @@ TEST(read_file_reports_size_and_keeps_embedded_nuls) {
     remove(TMP_BIN);
 }
 
-TEST(read_file_handles_empty_file) {
-    CHECK(write_file(TMP_TXT, "", 0));
+TEST(fs_read_handles_empty_file) {
+    CHECK(kit_fs_write(TMP_TXT, "", 0));
     size_t n = 123;
-    char *back = read_file_ex(TMP_TXT, &n);
+    char *back = kit_fs_read_sized(TMP_TXT, &n);
     if (!CHECK(back != NULL)) return;
     CHECK_INT(n, 0);
     CHECK_STR(back, "");
@@ -219,20 +219,20 @@ TEST(read_file_handles_empty_file) {
     remove(TMP_TXT);
 }
 
-TEST(read_file_missing_path_returns_null) {
-    /* The suite runs at LOG_CRITICAL, so the expected error stays quiet. */
-    CHECK(read_file("no/such/file/here") == NULL);
-    CHECK(!file_exists("no/such/file/here"));
-    CHECK_INT(file_size("no/such/file/here"), -1);
+TEST(fs_read_missing_path_returns_null) {
+    /* The suite runs at KIT_LOG_CRITICAL, so the expected error stays quiet. */
+    CHECK(kit_fs_read("no/such/file/here") == NULL);
+    CHECK(!kit_fs_is_file("no/such/file/here"));
+    CHECK_INT(kit_fs_size("no/such/file/here"), -1);
 }
 
 /* Regression: the buffer used to be sized from ftell(), which reports 0 for
  * the synthetic /proc files, so the content came back empty. */
 #ifdef __linux__
-TEST(read_file_reads_a_zero_sized_proc_file) {
-    CHECK_INT(file_size("/proc/self/status"), 0);
+TEST(fs_read_reads_a_zero_sized_proc_file) {
+    CHECK_INT(kit_fs_size("/proc/self/status"), 0);
     size_t n = 0;
-    char *content = read_file_ex("/proc/self/status", &n);
+    char *content = kit_fs_read_sized("/proc/self/status", &n);
     if (!CHECK(content != NULL)) return;
     CHECK(n > 0);
     CHECK(strstr(content, "Name:") != NULL);
@@ -241,11 +241,11 @@ TEST(read_file_reads_a_zero_sized_proc_file) {
 
 /* Regression: a buffered write only fails at fclose, whose result was ignored,
  * so a full filesystem was reported as a success. */
-TEST(write_file_detects_a_failing_flush) {
-    if (!file_exists("/dev/full")) return;   /* not available in every sandbox */
+TEST(fs_write_detects_a_failing_flush) {
+    if (!kit_fs_is_file("/dev/full")) return;   /* not available in every sandbox */
     char payload[8192];
     memset(payload, 'x', sizeof(payload));
-    CHECK(!write_file("/dev/full", payload, sizeof(payload)));
+    CHECK(!kit_fs_write("/dev/full", payload, sizeof(payload)));
 }
 #endif
 
@@ -253,81 +253,81 @@ TEST(write_file_detects_a_failing_flush) {
 
 typedef struct { int *items; size_t count, capacity; } IntArray;
 
-TEST(da_append_and_iterate) {
+TEST(array_append_and_iterate) {
     IntArray a = {0};
-    for (int i = 0; i < 1000; i++) da_append(&a, i);
+    for (int i = 0; i < 1000; i++) kit_array_push(&a, i);
     CHECK_INT(a.count, 1000);
     CHECK(a.capacity >= 1000);
 
     long sum = 0;
-    da_foreach(int, it, &a) sum += *it;
+    kit_array_each(int, it, &a) sum += *it;
     CHECK_INT(sum, 999L * 1000 / 2);
 
-    CHECK_INT(da_first(&a), 0);
-    CHECK_INT(da_last(&a), 999);
-    CHECK_INT(da_pop(&a), 999);
+    CHECK_INT(kit_array_first(&a), 0);
+    CHECK_INT(kit_array_last(&a), 999);
+    CHECK_INT(kit_array_pop(&a), 999);
     CHECK_INT(a.count, 999);
-    da_free(&a);
+    kit_array_free(&a);
     CHECK(a.items == NULL);
     CHECK_INT(a.capacity, 0);
 }
 
-TEST(da_append_many_and_remove) {
+TEST(array_append_many_and_remove) {
     int src[] = { 10, 20, 30, 40 };
     IntArray a = {0};
-    da_append_many(&a, src, 4);
+    kit_array_push_many(&a, src, 4);
     CHECK_INT(a.count, 4);
 
     const int *nothing = NULL;     /* must not reach memcpy with a NULL source */
-    da_append_many(&a, nothing, 0);
+    kit_array_push_many(&a, nothing, 0);
     CHECK_INT(a.count, 4);
 
-    da_remove_unordered(&a, 0);    /* last element takes the hole */
+    kit_array_swap_remove(&a, 0);    /* last element takes the hole */
     CHECK_INT(a.count, 3);
     CHECK_INT(a.items[0], 40);
-    CHECK(da_contains(&a, 20));
-    CHECK(!da_contains(&a, 10));
+    CHECK(kit_array_contains(&a, 20));
+    CHECK(!kit_array_contains(&a, 10));
 
     /* The portable counterpart reports the position, count when absent. */
     size_t at;
-    da_index_of(&a, 20, at);
+    kit_array_find(&a, 20, at);
     CHECK_INT(at, 1);
-    da_index_of(&a, 40, at);
+    kit_array_find(&a, 40, at);
     CHECK_INT(at, 0);              /* first match */
-    da_index_of(&a, 10, at);
+    kit_array_find(&a, 10, at);
     CHECK_INT(at, a.count);        /* absent */
-    da_free(&a);
+    kit_array_free(&a);
 }
 
-TEST(da_reserve_is_idempotent) {
+TEST(array_reserve_is_idempotent) {
     IntArray a = {0};
-    da_reserve(&a, 10);
+    kit_array_reserve(&a, 10);
     size_t cap = a.capacity;
     int *items = a.items;
-    da_reserve(&a, 10);
+    kit_array_reserve(&a, 10);
     CHECK_INT(a.capacity, cap);
     CHECK(a.items == items);       /* no reallocation when it already fits */
     CHECK_INT(a.count, 0);
-    da_free(&a);
+    kit_array_free(&a);
 }
 
 int main(void) {
-    log_set_level(LOG_CRITICAL);
+    kit_log_set_level(KIT_LOG_CRITICAL);
     utest_begin("files");
     RUN(log_level_filters_lower_levels);
     RUN(log_omits_ansi_codes_when_not_a_tty);
     RUN(log_fields_select_the_prefix);
     RUN(log_field_count_numbers_the_records);
-    RUN(write_then_read_roundtrip);
-    RUN(read_file_reports_size_and_keeps_embedded_nuls);
-    RUN(read_file_handles_empty_file);
-    RUN(read_file_missing_path_returns_null);
+    RUN(fs_write_then_read_roundtrip);
+    RUN(fs_read_reports_size_and_keeps_embedded_nuls);
+    RUN(fs_read_handles_empty_file);
+    RUN(fs_read_missing_path_returns_null);
 #ifdef __linux__
-    RUN(read_file_reads_a_zero_sized_proc_file);
-    RUN(write_file_detects_a_failing_flush);
+    RUN(fs_read_reads_a_zero_sized_proc_file);
+    RUN(fs_write_detects_a_failing_flush);
 #endif
-    RUN(da_append_and_iterate);
-    RUN(da_append_many_and_remove);
-    RUN(da_reserve_is_idempotent);
+    RUN(array_append_and_iterate);
+    RUN(array_append_many_and_remove);
+    RUN(array_reserve_is_idempotent);
     return utest_report();
 }
