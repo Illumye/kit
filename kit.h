@@ -360,10 +360,16 @@ KitErrorCode kit_error_code_from_errno(int errnum);
 
 /* --------------------------------------------------------------------------
  * SECTION 3 : FILESYSTEM
+ *
+ * Every function here that can fail takes a KitError * last, following the
+ * convention described in section 2: pass one to receive the failure, or NULL
+ * to have it logged. The codes are normalised across platforms, so removing a
+ * directory with kit_fs_remove is KIT_ERR_WRONG_KIND everywhere, although
+ * Linux, macOS and Windows each report it differently.
  * -------------------------------------------------------------------------- */
 
 /* Read an entire file into a malloc'd, NUL-terminated buffer (caller owns it).
- * Returns NULL on error.
+ * Returns NULL on failure.
  *
  * The read is streamed, so it also works on files whose size is not known up
  * front: pipes, character devices and the synthetic files under /proc.
@@ -371,22 +377,23 @@ KitErrorCode kit_error_code_from_errno(int errnum);
  * kit_fs_read_sized also reports the byte count, which is the only way to
  * handle binary data containing embedded NUL bytes. The terminator is always
  * written, so the result stays usable as a C string for text files. */
-char *kit_fs_read(const char *path);
-char *kit_fs_read_sized(const char *path, size_t *out_size);
+char *kit_fs_read(const char *path, KitError *err);
+char *kit_fs_read_sized(const char *path, size_t *out_size, KitError *err);
 
-/* Write data to file. Returns false on error. */
-bool kit_fs_write(const char *path, const void *data, size_t size);
+/* Write data to a file, creating or truncating it. */
+bool kit_fs_write(const char *path, const void *data, size_t size, KitError *err);
 
-/* Returns true if path exists and is a regular file. */
+/* Returns true if path exists and is a regular file. Not a failure otherwise:
+ * it answers a question. */
 bool kit_fs_is_file(const char *path);
 
-/* Returns the size in bytes of the file at path, or -1 on error.
+/* Returns the size in bytes of the file at path, or -1 on failure.
  * int64_t rather than long, which is 32 bits on Windows and on every ILP32
  * target, and would silently cap the answer at 2 GB. */
-int64_t kit_fs_size(const char *path);
+int64_t kit_fs_size(const char *path, KitError *err);
 
-/* What lives at path. KIT_FILE_KIND_NONE means nothing does, which is not an
- * error: use it to test existence regardless of the kind. */
+/* What lives at path. KIT_FILE_KIND_NONE means nothing does, which is not a
+ * failure: use it to test existence regardless of the kind. */
 typedef enum {
     KIT_FILE_KIND_NONE,
     KIT_FILE_KIND_REGULAR,
@@ -395,35 +402,37 @@ typedef enum {
 } KitFileKind;
 
 KitFileKind kit_fs_kind(const char *path);
-bool     kit_fs_is_dir(const char *path);
+bool        kit_fs_is_dir(const char *path);
 
-/* Creates a directory and every missing parent, like `mkdir -p`.
- * Succeeds when the directory already exists. */
-bool kit_fs_mkdir(const char *path);
+/* Creates a directory and every missing parent, like `mkdir -p`. Succeeds
+ * when the directory already exists; a file in the way is
+ * KIT_ERR_WRONG_KIND. */
+bool kit_fs_mkdir(const char *path, KitError *err);
 
 /* Copies src over dst, creating or truncating it. On POSIX the permission
- * bits of the source are carried over. Returns false on error. */
-bool kit_fs_copy(const char *src, const char *dst);
+ * bits of the source are carried over. */
+bool kit_fs_copy(const char *src, const char *dst, KitError *err);
 
 /* Removes a file, never a directory: POSIX remove() would take an empty
- * directory too, Windows remove() would not, so neither is used. Returns
- * false when the path did not exist, which is why an idempotent caller tests
- * with kit_fs_is_file first. */
-bool kit_fs_remove(const char *path);
+ * directory too, Windows remove() would not, so neither is used. A path that
+ * does not exist is KIT_ERR_NOT_FOUND, which is why an idempotent caller
+ * tests with kit_fs_is_file first. */
+bool kit_fs_remove(const char *path, KitError *err);
 
-/* Removes an empty directory. Recursion is left to the caller: a library
- * function that deletes a tree is one typo away from deleting the wrong one,
- * and the loop is four lines with kit_fs_list. */
-bool kit_fs_rmdir(const char *path);
+/* Removes an empty directory; one with entries is KIT_ERR_NOT_EMPTY.
+ * Recursion is left to the caller: a library function that deletes a tree is
+ * one typo away from deleting the wrong one, and the loop is four lines with
+ * kit_fs_list. */
+bool kit_fs_rmdir(const char *path, KitError *err);
 
 /* Renames or moves a file, replacing dst if it exists. Both paths must sit on
- * the same filesystem. */
-bool kit_fs_rename(const char *from, const char *to);
+ * the same filesystem; across devices it is KIT_ERR_UNSUPPORTED. */
+bool kit_fs_rename(const char *from, const char *to, KitError *err);
 
 /* Last modification time, in whole seconds since the Unix epoch, or -1.
  * kit_fs_stale compares at the finest resolution the platform exposes,
  * which is why it does not go through this function. */
-int64_t kit_fs_mtime(const char *path);
+int64_t kit_fs_mtime(const char *path, KitError *err);
 
 /* A list of owned, NUL-terminated paths. Works with the kit_array_* macros. */
 typedef struct {
@@ -436,33 +445,34 @@ void kit_file_list_free(KitFileList *list);
 
 /* Appends the entries of a directory to `out`, excluding "." and "..".
  * Names only, not full paths. Sorted with strcmp, so a build driven from the
- * result is reproducible. Returns false on error, leaving `out` untouched. */
-bool kit_fs_list(const char *path, KitFileList *out);
+ * result is reproducible. On failure `out` is left exactly as it was. */
+bool kit_fs_list(const char *path, KitFileList *out, KitError *err);
 
 /* Is `output` stale with respect to its inputs?
  *
  *   1  rebuild needed: output is missing, or an input is at least as recent
  *   0  output is up to date
- *  -1  error, already logged: an input is missing or unreadable
+ *  -1  failure: an input is missing or unreadable
  *
  * The tri-state is the whole point. A bool would force a missing input to be
  * reported as "up to date", which silently skips the build step.
  *
- *   if (kit_fs_stale(exe, srcs, n) != 0) { ... rebuild ... }
+ *   if (kit_fs_stale(exe, srcs, n, &err) != 0) { ... rebuild ... }
  */
-int kit_fs_stale(const char *output, const char *const *inputs, size_t n_inputs);
+int kit_fs_stale(const char *output, const char *const *inputs, size_t n_inputs,
+                 KitError *err);
 
 /* Same, taking the inputs straight from a KitFileList, the shape kit_fs_list
  * fills. Spelling the array as const char *const * is what lets a caller pass
  * one without a cast that -Wcast-qual then objects to. */
-int kit_fs_stale_list(const char *output, const KitFileList *inputs);
+int kit_fs_stale_list(const char *output, const KitFileList *inputs, KitError *err);
 
 /* Same, for a single input. A function rather than a macro: the array had to
  * be a compound literal, and C++ has no equivalent. */
-static inline int kit_fs_stale1(const char *output, const char *input) {
+static inline int kit_fs_stale1(const char *output, const char *input, KitError *err) {
     const char *one[1];
     one[0] = input;
-    return kit_fs_stale(output, one, 1);
+    return kit_fs_stale(output, one, 1, err);
 }
 
 /* --------------------------------------------------------------------------
@@ -1548,6 +1558,80 @@ KitErrorCode kit_error_code_from_errno(int e) {
 }
 
 
+#ifdef _WIN32
+static KitErrorCode kit__error_code_from_win32(DWORD e) {
+    switch (e) {
+        case ERROR_SUCCESS:             return KIT_OK;
+        case ERROR_FILE_NOT_FOUND:
+        case ERROR_PATH_NOT_FOUND:
+        case ERROR_INVALID_DRIVE:       return KIT_ERR_NOT_FOUND;
+        case ERROR_ALREADY_EXISTS:
+        case ERROR_FILE_EXISTS:         return KIT_ERR_EXISTS;
+        case ERROR_DIR_NOT_EMPTY:       return KIT_ERR_NOT_EMPTY;
+        case ERROR_DIRECTORY:           return KIT_ERR_WRONG_KIND;
+        case ERROR_ACCESS_DENIED:
+        case ERROR_WRITE_PROTECT:       return KIT_ERR_PERMISSION;
+        case ERROR_INVALID_NAME:
+        case ERROR_INVALID_PARAMETER:   return KIT_ERR_INVALID;
+        case ERROR_FILENAME_EXCED_RANGE:
+        case ERROR_BUFFER_OVERFLOW:     return KIT_ERR_RANGE;
+        case ERROR_DISK_FULL:
+        case ERROR_HANDLE_DISK_FULL:    return KIT_ERR_NO_SPACE;
+        case ERROR_NOT_ENOUGH_MEMORY:
+        case ERROR_OUTOFMEMORY:         return KIT_ERR_NO_MEMORY;
+        case ERROR_SHARING_VIOLATION:
+        case ERROR_LOCK_VIOLATION:
+        case ERROR_BUSY:                return KIT_ERR_BUSY;
+        case ERROR_NOT_SAME_DEVICE:
+        case ERROR_NOT_SUPPORTED:       return KIT_ERR_UNSUPPORTED;
+        default:                        return KIT_ERR_OTHER;
+    }
+}
+
+/* The Win32 counterpart of kit_error_errno, for API calls that report
+ * through GetLastError rather than errno. */
+static bool kit__error_win32(KitError *err, DWORD code, const char *fmt, ...) {
+    /* The wide API and an explicit conversion, because FormatMessageA answers
+     * in the ANSI code page and the message must stay UTF-8. English is asked
+     * for first, to match what strerror gives under the default C locale and
+     * not splice a translated clause onto an English sentence; the user's own
+     * language is the fallback where English resources are not installed. */
+    wchar_t wide[256];
+    DWORD   flags = FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+    DWORD   wn    = FormatMessageW(flags, NULL, code, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
+                                   wide, (DWORD)(sizeof(wide) / sizeof(wide[0])), NULL);
+    if (wn == 0) wn = FormatMessageW(flags, NULL, code, 0,
+                                     wide, (DWORD)(sizeof(wide) / sizeof(wide[0])), NULL);
+
+    char detail[512];
+    int  n = wn ? WideCharToMultiByte(CP_UTF8, 0, wide, (int)wn, detail,
+                                      (int)sizeof(detail) - 1, NULL, NULL)
+                : 0;
+    if (n < 0) n = 0;
+    detail[n] = '\0';
+
+    /* System messages end with ".\r\n", which reads badly mid-sentence. */
+    while (n > 0 && (detail[n - 1] == '\n' || detail[n - 1] == '\r' || detail[n - 1] == '.'))
+        detail[--n] = '\0';
+    if (n == 0) snprintf(detail, sizeof(detail), "system error %lu", (unsigned long)code);
+
+    va_list ap;
+    va_start(ap, fmt);
+    kit__error_record(err, kit__error_code_from_win32(code), (int)code, detail, fmt, ap);
+    va_end(ap);
+    return false;
+}
+#endif
+
+/* Records the failure of the operating system call that just returned: errno
+ * on POSIX, GetLastError on Windows. The value is read before any argument is
+ * formatted, so the formatting cannot clobber it. */
+#ifdef _WIN32
+#    define kit__error_os(err, ...) kit__error_win32((err), GetLastError(), __VA_ARGS__)
+#else
+#    define kit__error_os(err, ...) kit_error_errno((err), errno, __VA_ARGS__)
+#endif
+
 /* --------------------------------------------------------------------------
  * Files
  * -------------------------------------------------------------------------- */
@@ -1556,10 +1640,39 @@ KitErrorCode kit_error_code_from_errno(int e) {
 #define KIT_READ_CHUNK 65536
 #endif
 
+/* Defined with the path helpers further down; needed by the filesystem. */
+static bool kit__path_is_sep(char c);
+
+/* Windows reports a path that runs through an existing file as not found,
+ * POSIX as "not a directory". A caller should get one answer whatever the
+ * platform, so a not-found whose path passes through a file is reclassified,
+ * and the message says which component is in the way. Only on the failure
+ * path, so the extra lookups cost nothing when things work. */
+static void kit__error_refine_path(KitError *err, const char *path) {
+    if (!err || err->code != KIT_ERR_NOT_FOUND || !path || !path[0]) return;
+
+    KitBuf prefix = KIT_ZEROED;
+    for (const char *p = path + 1; *p; ++p) {
+        if (!kit__path_is_sep(*p)) continue;
+        kit_buf_reset(&prefix);
+        kit_buf_append_n(&prefix, path, (size_t)(p - path));
+
+        KitFileKind kind = kit_fs_kind(kit_buf_cstr(&prefix));
+        if (kind == KIT_FILE_KIND_NONE) break;       /* nothing deeper can exist */
+        if (kind != KIT_FILE_KIND_DIRECTORY) {
+            err->code = KIT_ERR_WRONG_KIND;
+            kit__error_append(err, " ('%s' is not a directory)", kit_buf_cstr(&prefix));
+            if (err->truncated) kit__error_mark_cut(err);
+            break;
+        }
+    }
+    kit_buf_free(&prefix);
+}
+
 /* Streamed so that the buffer never depends on ftell(): pipes, terminals and
  * the /proc files all report a size of 0 while still delivering data. The
  * reported size, when plausible, is only used to seed the capacity. */
-char *kit_fs_read_sized(const char *path, size_t *out_size) {
+char *kit_fs_read_sized(const char *path, size_t *out_size, KitError *err) {
     bool   result = true;
     FILE  *f      = NULL;
     char  *buffer = NULL;
@@ -1568,7 +1681,8 @@ char *kit_fs_read_sized(const char *path, size_t *out_size) {
 
     f = fopen(path, "rb");
     if (!f) {
-        KIT_ERROR("kit_fs_read: cannot open '%s': %s", path, strerror(errno));
+        kit_error_errno(err, errno, "cannot open '%s' for reading", path);
+        kit__error_refine_path(err, path);
         KIT_BAIL(false);
     }
 
@@ -1581,20 +1695,20 @@ char *kit_fs_read_sized(const char *path, size_t *out_size) {
 
     buffer = (char *)malloc(cap + 1);
     if (!buffer) {
-        KIT_ERROR("kit_fs_read: out of memory reading '%s'", path);
+        kit_error_set(err, KIT_ERR_NO_MEMORY, "out of memory reading '%s'", path);
         KIT_BAIL(false);
     }
 
     for (;;) {
         if (len == cap) {
             if (cap > SIZE_MAX / 2 - 1) {
-                KIT_ERROR("kit_fs_read: '%s' is too large to buffer", path);
+                kit_error_set(err, KIT_ERR_RANGE, "'%s' is too large to read into memory", path);
                 KIT_BAIL(false);
             }
             cap *= 2;
             char *grown = (char *)realloc(buffer, cap + 1);
             if (!grown) {
-                KIT_ERROR("kit_fs_read: out of memory reading '%s'", path);
+                kit_error_set(err, KIT_ERR_NO_MEMORY, "out of memory reading '%s'", path);
                 KIT_BAIL(false);
             }
             buffer = grown;
@@ -1606,12 +1720,11 @@ char *kit_fs_read_sized(const char *path, size_t *out_size) {
     }
 
     if (ferror(f)) {
-        KIT_ERROR("kit_fs_read: read error on '%s': %s", path, strerror(errno));
+        kit_error_errno(err, errno, "cannot read '%s'", path);
         KIT_BAIL(false);
     }
 
     buffer[len] = '\0';
-    KIT_DEBUG("kit_fs_read: '%s' (%zu bytes)", path, len);
 
 cleanup:
     if (f) fclose(f);
@@ -1620,29 +1733,29 @@ cleanup:
     return buffer;
 }
 
-char *kit_fs_read(const char *path) {
-    return kit_fs_read_sized(path, NULL);
+char *kit_fs_read(const char *path, KitError *err) {
+    return kit_fs_read_sized(path, NULL, err);
 }
 
 /* A buffered write only reaches the disk on fclose, so its return value is the
  * one that reports a full filesystem or a failing quota. */
-bool kit_fs_write(const char *path, const void *data, size_t size) {
+bool kit_fs_write(const char *path, const void *data, size_t size, KitError *err) {
     FILE *f = fopen(path, "wb");
     if (!f) {
-        KIT_ERROR("kit_fs_write: cannot open '%s': %s", path, strerror(errno));
+        kit_error_errno(err, errno, "cannot open '%s' for writing", path);
+        kit__error_refine_path(err, path);
         return false;
     }
 
-    bool ok = (size == 0) || (fwrite(data, 1, size, f) == size);
-    if (!ok) KIT_ERROR("kit_fs_write: short write on '%s': %s", path, strerror(errno));
-
-    if (fclose(f) != 0) {
-        KIT_ERROR("kit_fs_write: cannot flush '%s': %s", path, strerror(errno));
-        ok = false;
+    if (size > 0 && fwrite(data, 1, size, f) != size) {
+        /* Captured before fclose, which may overwrite errno on its way out. */
+        int cause = errno;
+        fclose(f);
+        return kit_error_errno(err, cause, "cannot write to '%s'", path);
     }
 
-    if (ok) KIT_DEBUG("kit_fs_write: '%s' (%zu bytes)", path, size);
-    return ok;
+    if (fclose(f) != 0) return kit_error_errno(err, errno, "cannot finish writing '%s'", path);
+    return true;
 }
 
 bool kit_fs_is_file(const char *path) {
@@ -1656,14 +1769,22 @@ bool kit_fs_is_file(const char *path) {
 #endif
 }
 
-int64_t kit_fs_size(const char *path) {
+int64_t kit_fs_size(const char *path, KitError *err) {
 #ifdef _WIN32
     WIN32_FILE_ATTRIBUTE_DATA info;
-    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &info)) return -1;
+    if (!GetFileAttributesExA(path, GetFileExInfoStandard, &info)) {
+        kit__error_os(err, "cannot read the size of '%s'", path);
+        kit__error_refine_path(err, path);
+        return -1;
+    }
     return (int64_t)(((ULONGLONG)info.nFileSizeHigh << 32) | info.nFileSizeLow);
 #else
     struct stat st;
-    if (stat(path, &st) != 0) return -1;
+    if (stat(path, &st) != 0) {
+        kit__error_os(err, "cannot read the size of '%s'", path);
+        kit__error_refine_path(err, path);
+        return -1;
+    }
     return (int64_t)st.st_size;
 #endif
 }
@@ -1797,9 +1918,6 @@ char *kit_str_dup(KitStr sv) {
  * Filesystem
  * -------------------------------------------------------------------------- */
 
-/* Defined with the path helpers further down; needed here by kit_fs_mkdir. */
-static bool kit__path_is_sep(char c);
-
 KitFileKind kit_fs_kind(const char *path) {
 #ifdef _WIN32
     DWORD attr = GetFileAttributesA(path);
@@ -1821,33 +1939,28 @@ bool kit_fs_is_dir(const char *path) {
 
 /* Creates one component. An existing directory is a success, which is what
  * makes kit_fs_mkdir idempotent. */
-static bool kit__mkdir_one(const char *path) {
+static bool kit__mkdir_one(const char *path, KitError *err) {
 #ifdef _WIN32
     if (CreateDirectoryA(path, NULL)) return true;
-    if (GetLastError() == ERROR_ALREADY_EXISTS) return kit_fs_is_dir(path);
-    KIT_ERROR("kit_fs_mkdir: cannot create '%s' (err=%lu)", path, GetLastError());
-    return false;
+    DWORD cause = GetLastError();
+    if (cause != ERROR_ALREADY_EXISTS)
+        return kit__error_win32(err, cause, "cannot create directory '%s'", path);
 #else
     if (mkdir(path, 0777) == 0) return true;
-    if (errno == EEXIST) {
-        if (kit_fs_is_dir(path)) return true;
-        KIT_ERROR("kit_fs_mkdir: '%s' exists and is not a directory", path);
-        return false;
-    }
-    KIT_ERROR("kit_fs_mkdir: cannot create '%s': %s", path, strerror(errno));
-    return false;
+    if (errno != EEXIST) return kit_error_errno(err, errno, "cannot create directory '%s'", path);
 #endif
+    if (kit_fs_is_dir(path)) return true;
+    return kit_error_set(err, KIT_ERR_WRONG_KIND,
+                         "cannot create directory '%s': a file is in the way", path);
 }
 
-bool kit_fs_mkdir(const char *path) {
-    if (!path || !*path) {
-        KIT_ERROR("kit_fs_mkdir: empty path");
-        return false;
-    }
+bool kit_fs_mkdir(const char *path, KitError *err) {
+    if (!path || !*path)
+        return kit_error_set(err, KIT_ERR_INVALID, "cannot create a directory from an empty path");
 
-    bool          result = true;
-    KitBuf sb     = KIT_ZEROED;
-    const char   *p      = path;
+    bool        result = true;
+    KitBuf      sb     = KIT_ZEROED;
+    const char *p      = path;
 
     /* Carry the leading separators over verbatim so that an absolute path
      * stays absolute and a UNC prefix survives. */
@@ -1862,7 +1975,7 @@ bool kit_fs_mkdir(const char *path) {
         const char *so_far = kit_buf_cstr(&sb);
         /* A bare Windows drive ("C:") is not a directory anyone can create. */
         bool is_drive = (sb.count == 2 && so_far[1] == ':');
-        if (!is_drive && !kit__mkdir_one(so_far)) KIT_BAIL(false);
+        if (!is_drive && !kit__mkdir_one(so_far, err)) KIT_BAIL(false);
 
         if (*p) kit_buf_append_char(&sb, KIT_PATH_SEP);
     }
@@ -1872,11 +1985,12 @@ cleanup:
     return result;
 }
 
-bool kit_fs_copy(const char *src, const char *dst) {
+bool kit_fs_copy(const char *src, const char *dst, KitError *err) {
 #ifdef _WIN32
     if (CopyFileA(src, dst, FALSE)) return true;
-    KIT_ERROR("kit_fs_copy: '%s' -> '%s' failed (err=%lu)",
-        src, dst, GetLastError());
+    kit__error_os(err, "cannot copy '%s' to '%s'", src, dst);
+    kit__error_refine_path(err, src);
+    kit__error_refine_path(err, dst);
     return false;
 #else
     bool result = true;
@@ -1884,13 +1998,14 @@ bool kit_fs_copy(const char *src, const char *dst) {
 
     in = open(src, O_RDONLY);
     if (in < 0) {
-        KIT_ERROR("kit_fs_copy: cannot open '%s': %s", src, strerror(errno));
+        kit_error_errno(err, errno, "cannot open '%s' for copying", src);
+        kit__error_refine_path(err, src);
         KIT_BAIL(false);
     }
 
     struct stat st;
     if (fstat(in, &st) != 0) {
-        KIT_ERROR("kit_fs_copy: cannot stat '%s': %s", src, strerror(errno));
+        kit_error_errno(err, errno, "cannot read the attributes of '%s'", src);
         KIT_BAIL(false);
     }
 
@@ -1898,7 +2013,8 @@ bool kit_fs_copy(const char *src, const char *dst) {
      * briefly visible with wider permissions than the source. */
     out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode & 07777);
     if (out < 0) {
-        KIT_ERROR("kit_fs_copy: cannot open '%s': %s", dst, strerror(errno));
+        kit_error_errno(err, errno, "cannot create '%s'", dst);
+        kit__error_refine_path(err, dst);
         KIT_BAIL(false);
     }
 
@@ -1908,14 +2024,14 @@ bool kit_fs_copy(const char *src, const char *dst) {
         if (n == 0) break;
         if (n < 0) {
             if (errno == EINTR) continue;
-            KIT_ERROR("kit_fs_copy: read '%s': %s", src, strerror(errno));
+            kit_error_errno(err, errno, "cannot read '%s'", src);
             KIT_BAIL(false);
         }
         for (ssize_t off = 0; off < n; ) {
             ssize_t w = write(out, buf + off, (size_t)(n - off));
             if (w < 0) {
                 if (errno == EINTR) continue;
-                KIT_ERROR("kit_fs_copy: write '%s': %s", dst, strerror(errno));
+                kit_error_errno(err, errno, "cannot write to '%s'", dst);
                 KIT_BAIL(false);
             }
             off += w;
@@ -1924,53 +2040,74 @@ bool kit_fs_copy(const char *src, const char *dst) {
 
 cleanup:
     if (in >= 0) close(in);
-    /* close() is where a deferred write error surfaces, so it is checked. */
+    /* close() is where a deferred write error surfaces, so it is checked;
+     * but an earlier failure is the one worth reporting. */
     if (out >= 0 && close(out) != 0 && result) {
-        KIT_ERROR("kit_fs_copy: cannot flush '%s': %s", dst, strerror(errno));
+        kit_error_errno(err, errno, "cannot finish writing '%s'", dst);
         result = false;
     }
     return result;
 #endif
 }
 
-bool kit_fs_remove(const char *path) {
+bool kit_fs_remove(const char *path, KitError *err) {
 #ifdef _WIN32
     if (DeleteFileA(path)) return true;
-    KIT_ERROR("kit_fs_remove: cannot remove '%s' (err=%lu)", path, GetLastError());
-    return false;
+    DWORD cause = GetLastError();
 #else
     /* unlink rather than remove: remove() also takes an empty directory on
      * POSIX and not on Windows, and one behaviour on both is worth more. */
     if (unlink(path) == 0) return true;
-    KIT_ERROR("kit_fs_remove: cannot remove '%s': %s", path, strerror(errno));
-    return false;
+    int cause = errno;
 #endif
+    /* Linux says EISDIR, macOS EPERM and Windows ERROR_ACCESS_DENIED for the
+     * same mistake; the caller should see one answer. */
+    if (kit_fs_is_dir(path))
+        return kit_error_set(err, KIT_ERR_WRONG_KIND,
+                             "cannot remove '%s': it is a directory", path);
+#ifdef _WIN32
+    kit__error_win32(err, cause, "cannot remove '%s'", path);
+#else
+    kit_error_errno(err, cause, "cannot remove '%s'", path);
+#endif
+    kit__error_refine_path(err, path);
+    return false;
 }
 
-bool kit_fs_rmdir(const char *path) {
+bool kit_fs_rmdir(const char *path, KitError *err) {
 #ifdef _WIN32
     if (RemoveDirectoryA(path)) return true;
-    KIT_ERROR("kit_fs_rmdir: cannot remove '%s' (err=%lu)", path, GetLastError());
-    return false;
+    DWORD cause = GetLastError();
 #else
     if (rmdir(path) == 0) return true;
-    KIT_ERROR("kit_fs_rmdir: cannot remove '%s': %s", path, strerror(errno));
-    return false;
+    int cause = errno;
 #endif
+    KitFileKind kind = kit_fs_kind(path);
+    if (kind == KIT_FILE_KIND_REGULAR || kind == KIT_FILE_KIND_OTHER)
+        return kit_error_set(err, KIT_ERR_WRONG_KIND,
+                             "cannot remove directory '%s': it is not a directory", path);
+#ifdef _WIN32
+    kit__error_win32(err, cause, "cannot remove directory '%s'", path);
+#else
+    /* POSIX allows EEXIST as well as ENOTEMPTY for a directory with entries. */
+    if (cause == EEXIST && kind == KIT_FILE_KIND_DIRECTORY) cause = ENOTEMPTY;
+    kit_error_errno(err, cause, "cannot remove directory '%s'", path);
+#endif
+    kit__error_refine_path(err, path);
+    return false;
 }
 
-bool kit_fs_rename(const char *from, const char *to) {
+bool kit_fs_rename(const char *from, const char *to, KitError *err) {
 #ifdef _WIN32
     /* Plain rename() refuses an existing destination on Windows. */
     if (MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING)) return true;
-    KIT_ERROR("kit_fs_rename: '%s' -> '%s' failed (err=%lu)",
-        from, to, GetLastError());
-    return false;
 #else
     if (rename(from, to) == 0) return true;
-    KIT_ERROR("kit_fs_rename: '%s' -> '%s': %s", from, to, strerror(errno));
-    return false;
 #endif
+    kit__error_os(err, "cannot rename '%s' to '%s'", from, to);
+    kit__error_refine_path(err, from);
+    kit__error_refine_path(err, to);
+    return false;
 }
 
 /* Modification time at the finest resolution the platform exposes. A build
@@ -2007,24 +2144,26 @@ static bool kit__mtime(const char *path, Kit__Mtime *out) {
 #endif
 }
 
-int64_t kit_fs_mtime(const char *path) {
+int64_t kit_fs_mtime(const char *path, KitError *err) {
     Kit__Mtime t;
     if (!kit__mtime(path, &t)) {
-        KIT_ERROR("kit_fs_mtime: cannot stat '%s': %s", path, strerror(errno));
+        kit__error_os(err, "cannot read the modification time of '%s'", path);
+        kit__error_refine_path(err, path);
         return -1;
     }
     return t.sec;
 }
 
-int kit_fs_stale(const char *output, const char *const *inputs, size_t n_inputs) {
+int kit_fs_stale(const char *output, const char *const *inputs, size_t n_inputs,
+                 KitError *err) {
     Kit__Mtime out_time;
     if (!kit__mtime(output, &out_time)) return 1;   /* missing: must build */
 
     for (size_t i = 0; i < n_inputs; ++i) {
         Kit__Mtime in_time;
         if (!kit__mtime(inputs[i], &in_time)) {
-            KIT_ERROR("kit_fs_stale: input '%s' is unreadable: %s",
-                inputs[i], strerror(errno));
+            kit__error_os(err, "cannot read the modification time of input '%s'", inputs[i]);
+            kit__error_refine_path(err, inputs[i]);
             return -1;
         }
         /* ">=" and not ">": same-timestamp means the ordering is unknown, and
@@ -2035,8 +2174,8 @@ int kit_fs_stale(const char *output, const char *const *inputs, size_t n_inputs)
     return 0;
 }
 
-int kit_fs_stale_list(const char *output, const KitFileList *inputs) {
-    return kit_fs_stale(output, (const char *const *)inputs->items, inputs->count);
+int kit_fs_stale_list(const char *output, const KitFileList *inputs, KitError *err) {
+    return kit_fs_stale(output, (const char *const *)inputs->items, inputs->count, err);
 }
 
 void kit_file_list_free(KitFileList *list) {
@@ -2056,23 +2195,26 @@ static char *kit__strdup(const char *s) {
     return copy;
 }
 
-bool kit_fs_list(const char *path, KitFileList *out) {
+bool kit_fs_list(const char *path, KitFileList *out, KitError *err) {
     /* Entries land in a scratch list first, so a failure halfway through
      * leaves the caller's list exactly as it was. */
     KitFileList found = KIT_ZEROED;
-    bool     result = true;
 
 #ifdef _WIN32
     char pattern[MAX_PATH];
-    if (snprintf(pattern, sizeof(pattern), "%s\\*", path) >= (int)sizeof(pattern)) {
-        KIT_ERROR("kit_fs_list: path too long: '%s'", path);
-        return false;
-    }
+    if (snprintf(pattern, sizeof(pattern), "%s\\*", path) >= (int)sizeof(pattern))
+        return kit_error_set(err, KIT_ERR_RANGE, "cannot list '%s': the path is too long", path);
 
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pattern, &fd);
     if (h == INVALID_HANDLE_VALUE) {
-        KIT_ERROR("kit_fs_list: cannot open '%s' (err=%lu)", path, GetLastError());
+        DWORD cause = GetLastError();
+        KitFileKind kind = kit_fs_kind(path);
+        if (kind == KIT_FILE_KIND_REGULAR || kind == KIT_FILE_KIND_OTHER)
+            return kit_error_set(err, KIT_ERR_WRONG_KIND,
+                                 "cannot list '%s': it is not a directory", path);
+        kit__error_win32(err, cause, "cannot list '%s'", path);
+        kit__error_refine_path(err, path);
         return false;
     }
     do {
@@ -2084,7 +2226,8 @@ bool kit_fs_list(const char *path, KitFileList *out) {
 #else
     DIR *dir = opendir(path);
     if (!dir) {
-        KIT_ERROR("kit_fs_list: cannot open '%s': %s", path, strerror(errno));
+        kit_error_errno(err, errno, "cannot list '%s'", path);
+        kit__error_refine_path(err, path);
         return false;
     }
 
@@ -2096,17 +2239,13 @@ bool kit_fs_list(const char *path, KitFileList *out) {
     }
     /* readdir returns NULL both at the end and on failure; errno tells them
      * apart, which is why it is cleared before each call. */
-    if (errno != 0) {
-        KIT_ERROR("kit_fs_list: error reading '%s': %s", path, strerror(errno));
-        result = false;
-    }
+    int cause = errno;
     closedir(dir);
-#endif
-
-    if (!result) {
+    if (cause != 0) {
         kit_file_list_free(&found);
-        return false;
+        return kit_error_errno(err, cause, "cannot list '%s'", path);
     }
+#endif
 
     if (found.count > 1)
         qsort(found.items, found.count, sizeof(*found.items), kit__cmp_cstr);

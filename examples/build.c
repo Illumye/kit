@@ -7,6 +7,13 @@
  * the option parser, the filesystem layer, the temporary allocator, the
  * command runner and the logger to work together.
  *
+ * Failures travel up as a KitError. Each layer adds what it was doing, and
+ * main reports the whole chain once, so a failure reads as a sentence. With a
+ * file sitting where the build directory should go:
+ *
+ *   [ERROR] preparing build/demo: cannot create directory 'build': a file is
+ *   in the way
+ *
  *   cc -o build examples/build.c && ./build
  *   ./build -v            show every command
  *   ./build --clean       remove the build directory
@@ -23,9 +30,9 @@
 /* Recompiling one object also depends on the headers it includes. Tracking
  * that properly means parsing the compiler's dependency output; treating any
  * header in the directory as an input to every object is cruder, and right. */
-static bool collect_sources(KitFileList *sources, KitFileList *headers) {
+static bool collect_sources(KitFileList *sources, KitFileList *headers, KitError *err) {
     KitFileList entries = {0};
-    if (!kit_fs_list(SRC_DIR, &entries)) return false;
+    if (!kit_fs_list(SRC_DIR, &entries, err)) return false;
 
     bool ok = true;
     for (size_t i = 0; i < entries.count; ++i) {
@@ -36,10 +43,8 @@ static bool collect_sources(KitFileList *sources, KitFileList *headers) {
         else if (kit_str_ends_with_cstr(KIT_STR(name), ".h")) kit_array_push(headers, path);
     }
 
-    if (sources->count == 0) {
-        KIT_ERROR("no source file in %s", SRC_DIR);
-        ok = false;
-    }
+    if (sources->count == 0)
+        ok = kit_error_set(err, KIT_ERR_NOT_FOUND, "no source file in %s", SRC_DIR);
     kit_file_list_free(&entries);
     return ok;
 }
@@ -52,16 +57,16 @@ static char *object_for(const char *source) {
 }
 
 static bool compile(char *source, const char *object,
-                    const KitFileList *headers, size_t *compiled) {
+                    const KitFileList *headers, size_t *compiled, KitError *err) {
     /* The object depends on its source and on every header. */
     KitFileList inputs = {0};
     kit_array_push(&inputs, source);
     kit_array_push_many(&inputs, headers->items, headers->count);
 
-    int stale = kit_fs_stale_list(object, &inputs);
+    int stale = kit_fs_stale_list(object, &inputs, err);
     kit_array_free(&inputs);
 
-    if (stale < 0) return false;
+    if (stale < 0) return kit_error_context(err, "checking whether %s is up to date", object);
     if (stale == 0) {
         KIT_DEBUG("up to date: %s", object);
         return true;
@@ -73,13 +78,14 @@ static bool compile(char *source, const char *object,
     bool ok = kit_command_run(&cmd);
     kit_command_free(&cmd);
 
-    if (ok) (*compiled)++;
-    return ok;
+    if (!ok) return kit_error_set(err, KIT_ERR_PROCESS, "the compiler failed");
+    (*compiled)++;
+    return true;
 }
 
-static bool link_target(const KitFileList *objects) {
-    int stale = kit_fs_stale_list(TARGET, objects);
-    if (stale < 0) return false;
+static bool link_target(const KitFileList *objects, KitError *err) {
+    int stale = kit_fs_stale_list(TARGET, objects, err);
+    if (stale < 0) return kit_error_context(err, "checking whether %s is up to date", TARGET);
     if (stale == 0) {
         KIT_INFO("%s is up to date", TARGET);
         return true;
@@ -90,23 +96,24 @@ static bool link_target(const KitFileList *objects) {
     for (size_t i = 0; i < objects->count; ++i) kit_command_push(&cmd, objects->items[i]);
     bool ok = kit_command_run(&cmd);
     kit_command_free(&cmd);
-    return ok;
+    return ok ? true : kit_error_set(err, KIT_ERR_PROCESS, "the linker failed");
 }
 
-static bool clean(void) {
+static bool clean(KitError *err) {
     KitFileList entries = {0};
     if (!kit_fs_is_dir(BUILD_DIR)) {
         KIT_INFO("nothing to clean");
         return true;
     }
-    if (!kit_fs_list(BUILD_DIR, &entries)) return false;
+    if (!kit_fs_list(BUILD_DIR, &entries, err)) return false;
 
-    for (size_t i = 0; i < entries.count; ++i)
-        kit_fs_remove(kit_scratch_printf("%s/%s", BUILD_DIR, entries.items[i]));
+    bool ok = true;
+    for (size_t i = 0; i < entries.count && ok; ++i)
+        ok = kit_fs_remove(kit_scratch_printf("%s/%s", BUILD_DIR, entries.items[i]), err);
 
     kit_file_list_free(&entries);
-    KIT_INFO("cleaned %s", BUILD_DIR);
-    return true;
+    if (ok) KIT_INFO("cleaned %s", BUILD_DIR);
+    return ok;
 }
 
 int main(int argc, char **argv) {
@@ -134,30 +141,54 @@ int main(int argc, char **argv) {
     kit_log_set_level(verbose ? KIT_LOG_DEBUG : KIT_LOG_INFO);
     kit_log_set_fields(KIT_LOG_FIELD_TIME | KIT_LOG_FIELD_LEVEL);
 
-    if (do_clean) return clean() ? 0 : 1;
+    KitError err = KIT_ZEROED;
 
-    if (!kit_fs_mkdir(BUILD_DIR)) return 1;
+    if (do_clean) {
+        if (clean(&err)) return 0;
+        kit_error_context(&err, "cleaning");
+        KIT_ERROR("%s", err.message);
+        return 1;
+    }
 
     KitFileList sources = {0}, headers = {0}, objects = {0};
-    int      status  = 1;
+    int         status  = 1;
 
-    if (!collect_sources(&sources, &headers)) goto done;
+    if (!kit_fs_mkdir(BUILD_DIR, &err)) {
+        kit_error_context(&err, "preparing %s", BUILD_DIR);
+        goto done;
+    }
+    if (!collect_sources(&sources, &headers, &err)) {
+        kit_error_context(&err, "collecting the sources");
+        goto done;
+    }
     KIT_DEBUG("%zu source(s), %zu header(s)", sources.count, headers.count);
 
     size_t compiled = 0;
     for (size_t i = 0; i < sources.count; ++i) {
         char *object = object_for(sources.items[i]);
-        if (!compile(sources.items[i], object, &headers, &compiled)) goto done;
+        if (!compile(sources.items[i], object, &headers, &compiled, &err)) {
+            kit_error_context(&err, "compiling %s", kit_path_basename(sources.items[i]));
+            goto done;
+        }
         kit_array_push(&objects, object);
     }
 
-    if (!link_target(&objects)) goto done;
+    if (!link_target(&objects, &err)) {
+        kit_error_context(&err, "linking");
+        goto done;
+    }
     KIT_INFO("%s ready (%zu file(s) compiled)", TARGET, compiled);
 
-    if (run && !kit_command_run_args(TARGET, NULL)) goto done;
+    if (run && !kit_command_run_args(TARGET, NULL)) {
+        kit_error_set(&err, KIT_ERR_PROCESS, "%s exited with a failure", TARGET);
+        goto done;
+    }
     status = 0;
 
 done:
+    /* One report for the whole chain, however deep the failure started. */
+    if (err.code != KIT_OK) KIT_ERROR("%s", err.message);
+
     /* The paths live in the temporary arena, so the lists own no memory of
      * their own and only the arrays are released. */
     kit_array_free(&sources);

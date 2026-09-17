@@ -211,8 +211,8 @@ static char *capture_log(void (*fn)(void)) {
     kit_log_set_output(NULL);
     kit_log_set_level(KIT_LOG_CRITICAL);
     kit_log_set_fields(KIT_LOG_FIELDS_DEFAULT);
-    char *text = kit_fs_read(TMP_LOG);
-    kit_fs_remove(TMP_LOG);
+    char *text = kit_fs_read(TMP_LOG, NULL);
+    kit_fs_remove(TMP_LOG, NULL);
     return text;
 }
 

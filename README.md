@@ -67,9 +67,15 @@ if (!load_config("config.ini", &cfg, &err)) {
 starting the server: reading config.ini: line 12: expected an integer (invalid)
 ```
 
+Every kit function that can fail takes a `KitError *` last. Pass one to receive
+the failure, or `NULL` to have it logged instead: a kit function never both
+logs a failure and reports it.
+
 The code is a category that tells the caller what to do, `not_found`,
 `permission` or `busy` among others, and the platform's own value stays in
-`err.native`. Context is added outermost first as the error travels up. When
+`err.native`. The filesystem normalises the codes across platforms: removing a
+directory with `kit_fs_remove` is `wrong_kind` on Linux, macOS and Windows
+alike, although each system reports it differently. Context is added outermost first as the error travels up. When
 the chain outgrows the buffer, the middle is elided and both the outermost
 context and the root cause are kept.
 
@@ -93,7 +99,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (kit_fs_stale1(out, "main.c") != 0) {
+    if (kit_fs_stale1(out, "main.c", NULL) != 0) {
         KitCommand cmd = KIT_ZEROED;
         kit_command_push_all(&cmd, "cc", "-o", out, "main.c", NULL);
         if (!kit_command_run(&cmd)) return 1;
@@ -119,7 +125,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 102 tests over seven files, and the header compiles warning-free
+The suite is 106 tests over seven files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 

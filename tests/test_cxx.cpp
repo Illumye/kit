@@ -62,10 +62,10 @@ TEST(cxx_dynamic_array_macros) {
 TEST(cxx_fs_stale1_is_a_function_now) {
     /* It used to be a macro over a compound literal, which C++ has no form of. */
     const char *path = "utest-tmp-cxx.txt";
-    kit_fs_write(path, "x", 1);
-    CHECK_INT(kit_fs_stale1(path, path), 1);      /* itself, so not older */
-    CHECK_INT(kit_fs_stale1("no/such/output", path), 1);
-    kit_fs_remove(path);
+    kit_fs_write(path, "x", 1, NULL);
+    CHECK_INT(kit_fs_stale1(path, path, NULL), 1);      /* itself, so not older */
+    CHECK_INT(kit_fs_stale1("no/such/output", path, NULL), 1);
+    kit_fs_remove(path, NULL);
 }
 
 TEST(cxx_interop_with_the_standard_library) {

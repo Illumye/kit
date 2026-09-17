@@ -25,6 +25,23 @@ what its old name did.
   `KIT_CRITICAL`. `KIT_LOG(level, ...)` remains for a level chosen at run
   time.
 
+## Since the rename
+
+**The filesystem reports failures through `KitError`.** Every `kit_fs_*`
+function that can fail takes a `KitError *` as its last argument. Passing
+`NULL` keeps the old behaviour, the failure is logged, so the smallest possible
+migration is to append `, NULL` to each call. `kit_fs_is_file`, `kit_fs_is_dir`
+and `kit_fs_kind` answer a question rather than fail, and are unchanged.
+
+```c
+char *text = kit_fs_read("config.ini");              /* before */
+char *text = kit_fs_read("config.ini", NULL);        /* same behaviour */
+
+KitError err = KIT_ZEROED;                            /* or take the failure */
+char *text = kit_fs_read("config.ini", &err);
+if (!text && err.code == KIT_ERR_NOT_FOUND) { ... }
+```
+
 ## Every name
 
 ### Configuration

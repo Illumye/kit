@@ -28,7 +28,7 @@ TEST(log_level_filters_lower_levels) {
     kit_log_set_output(NULL);
     kit_log_set_level(KIT_LOG_CRITICAL);
 
-    char *content = kit_fs_read(TMP_TXT);
+    char *content = kit_fs_read(TMP_TXT, NULL);
     if (!CHECK(content != NULL)) return;
     CHECK(strstr(content, "visible")   != NULL);
     CHECK(strstr(content, "invisible") == NULL);
@@ -51,7 +51,7 @@ TEST(log_omits_ansi_codes_when_not_a_tty) {
     kit_log_set_output(NULL);
     kit_log_set_level(KIT_LOG_CRITICAL);
 
-    char *content = kit_fs_read(TMP_TXT);
+    char *content = kit_fs_read(TMP_TXT, NULL);
     if (!CHECK(content != NULL)) return;
     CHECK(strchr(content, '\x1b') == NULL);
     CHECK(strstr(content, "plain text please") != NULL);
@@ -68,7 +68,7 @@ TEST(log_omits_ansi_codes_when_not_a_tty) {
     kit_log_set_output(NULL);
     kit_log_set_level(KIT_LOG_CRITICAL);
 
-    content = kit_fs_read(TMP_TXT);
+    content = kit_fs_read(TMP_TXT, NULL);
     if (!CHECK(content != NULL)) return;
     CHECK(strchr(content, '\x1b') != NULL);
     free(content);
@@ -94,7 +94,7 @@ static char *log_once(unsigned fields, KitLogLevel level, const char *message) {
     kit_log_set_output(NULL);
     kit_log_set_level(KIT_LOG_CRITICAL);
     kit_log_set_fields(KIT_LOG_FIELDS_DEFAULT);
-    return kit_fs_read(TMP_TXT);
+    return kit_fs_read(TMP_TXT, NULL);
 }
 
 TEST(log_fields_select_the_prefix) {
@@ -165,7 +165,7 @@ TEST(log_level_macros_map_to_their_levels) {
     kit_log_set_level(KIT_LOG_CRITICAL);
     kit_log_set_fields(KIT_LOG_FIELDS_DEFAULT);
 
-    char *text = kit_fs_read(TMP_TXT);
+    char *text = kit_fs_read(TMP_TXT, NULL);
     if (!CHECK(text != NULL)) return;
     char expected[256];
     snprintf(expected, sizeof(expected),
@@ -173,7 +173,7 @@ TEST(log_level_macros_map_to_their_levels) {
              __FILE__, line);
     CHECK_STR(text, expected);
     free(text);
-    kit_fs_remove(TMP_TXT);
+    kit_fs_remove(TMP_TXT, NULL);
 }
 
 TEST(log_field_count_numbers_the_records) {
@@ -192,7 +192,7 @@ TEST(log_field_count_numbers_the_records) {
     kit_log_set_level(KIT_LOG_CRITICAL);
     kit_log_set_fields(KIT_LOG_FIELDS_DEFAULT);
 
-    char *text = kit_fs_read(TMP_TXT);
+    char *text = kit_fs_read(TMP_TXT, NULL);
     if (!CHECK(text != NULL)) return;
 
     /* Consecutive, whatever the counter started at. */
@@ -218,11 +218,11 @@ TEST(log_field_count_numbers_the_records) {
 
 TEST(fs_write_then_read_roundtrip) {
     const char *payload = "hello\nworld\n";
-    CHECK(kit_fs_write(TMP_TXT, payload, strlen(payload)));
-    CHECK_INT(kit_fs_size(TMP_TXT), (int64_t)strlen(payload));
+    CHECK(kit_fs_write(TMP_TXT, payload, strlen(payload), NULL));
+    CHECK_INT(kit_fs_size(TMP_TXT, NULL), (int64_t)strlen(payload));
     CHECK(kit_fs_is_file(TMP_TXT));
 
-    char *back = kit_fs_read(TMP_TXT);
+    char *back = kit_fs_read(TMP_TXT, NULL);
     if (!CHECK(back != NULL)) return;
     CHECK_STR(back, payload);
     free(back);
@@ -231,10 +231,10 @@ TEST(fs_write_then_read_roundtrip) {
 
 TEST(fs_read_reports_size_and_keeps_embedded_nuls) {
     const char blob[] = { 'a', '\0', 'b', '\0', '\0', 'c' };
-    CHECK(kit_fs_write(TMP_BIN, blob, sizeof(blob)));
+    CHECK(kit_fs_write(TMP_BIN, blob, sizeof(blob), NULL));
 
     size_t n = 0;
-    char *back = kit_fs_read_sized(TMP_BIN, &n);
+    char *back = kit_fs_read_sized(TMP_BIN, &n, NULL);
     if (!CHECK(back != NULL)) return;
     CHECK_INT(n, sizeof(blob));
     CHECK(memcmp(back, blob, sizeof(blob)) == 0);
@@ -244,9 +244,9 @@ TEST(fs_read_reports_size_and_keeps_embedded_nuls) {
 }
 
 TEST(fs_read_handles_empty_file) {
-    CHECK(kit_fs_write(TMP_TXT, "", 0));
+    CHECK(kit_fs_write(TMP_TXT, "", 0, NULL));
     size_t n = 123;
-    char *back = kit_fs_read_sized(TMP_TXT, &n);
+    char *back = kit_fs_read_sized(TMP_TXT, &n, NULL);
     if (!CHECK(back != NULL)) return;
     CHECK_INT(n, 0);
     CHECK_STR(back, "");
@@ -256,18 +256,18 @@ TEST(fs_read_handles_empty_file) {
 
 TEST(fs_read_missing_path_returns_null) {
     /* The suite runs at KIT_LOG_CRITICAL, so the expected error stays quiet. */
-    CHECK(kit_fs_read("no/such/file/here") == NULL);
+    CHECK(kit_fs_read("no/such/file/here", NULL) == NULL);
     CHECK(!kit_fs_is_file("no/such/file/here"));
-    CHECK_INT(kit_fs_size("no/such/file/here"), -1);
+    CHECK_INT(kit_fs_size("no/such/file/here", NULL), -1);
 }
 
 /* Regression: the buffer used to be sized from ftell(), which reports 0 for
  * the synthetic /proc files, so the content came back empty. */
 #ifdef __linux__
 TEST(fs_read_reads_a_zero_sized_proc_file) {
-    CHECK_INT(kit_fs_size("/proc/self/status"), 0);
+    CHECK_INT(kit_fs_size("/proc/self/status", NULL), 0);
     size_t n = 0;
-    char *content = kit_fs_read_sized("/proc/self/status", &n);
+    char *content = kit_fs_read_sized("/proc/self/status", &n, NULL);
     if (!CHECK(content != NULL)) return;
     CHECK(n > 0);
     CHECK(strstr(content, "Name:") != NULL);
@@ -280,7 +280,7 @@ TEST(fs_write_detects_a_failing_flush) {
     if (!kit_fs_is_file("/dev/full")) return;   /* not available in every sandbox */
     char payload[8192];
     memset(payload, 'x', sizeof(payload));
-    CHECK(!kit_fs_write("/dev/full", payload, sizeof(payload)));
+    CHECK(!kit_fs_write("/dev/full", payload, sizeof(payload), NULL));
 }
 #endif
 

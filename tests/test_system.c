@@ -161,7 +161,7 @@ TEST(cli_usage_prints_long_names_in_full) {
     kit_cli_usage_arr(fp, "prog", opts);
     fclose(fp);
 
-    char *text = kit_fs_read(path);
+    char *text = kit_fs_read(path, NULL);
     if (!CHECK(text != NULL)) return;
     CHECK(strstr(text, "--an-extremely-long-option-name-that-overflows-the-column"
                        "=<A_VERY_LONG_METAVARIABLE_NAME>") != NULL);
