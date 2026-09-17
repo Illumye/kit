@@ -52,8 +52,13 @@ both yield two fields. Distinguishing them needs a state bit hidden inside the
 where `kit_array_find` is the portable equivalent. An expression-valued macro
 cannot be written without them.
 
-**Windows is exercised through wine, not on Windows.** `make check-windows`
+**Windows is exercised through wine locally.** `make check-windows`
 cross-compiles the suite with mingw-w64 and runs it under wine, so every
-`_WIN32` branch is compiled and executed. That is not the same as a real
+`_WIN32` branch is compiled and executed on this machine. That is not a real
 Windows box: wine reimplements the API, the toolchain is mingw rather than
-MSVC, and only the msvcrt runtime is covered, not UCRT.
+MSVC, and only the msvcrt runtime is covered, not UCRT. Continuous integration
+covers the rest, on `windows-latest` with MSVC.
+
+**macOS and MSVC have never been compiled here.** Their branches are reasoned
+about rather than tested, and only continuous integration exercises them. Until
+it has run at least once, treat both as unverified.

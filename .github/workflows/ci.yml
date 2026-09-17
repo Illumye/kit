@@ -27,6 +27,65 @@ jobs:
       - name: test-all
         run: make CC=${{ matrix.cc }} CXX=${{ matrix.cxx }} test-all
 
+  # The header has Apple-specific branches, st_mtimespec among them, and macOS
+  # hides the POSIX functions under a strict -std=c11 exactly as glibc does,
+  # through a different feature macro. Neither had ever been compiled.
+  macos:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: test-all
+        run: make CC=cc CXX=c++ test-all
+
+  # Real Windows, the Microsoft compiler and the UCRT runtime: three things
+  # wine and mingw cannot stand in for. There is no make here, so the suites
+  # are built directly.
+  windows-msvc:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      # /wd4200 is the flexible array member the arena regions use, which MSVC
+      # accepts and warns about.
+      - name: build and run the suites
+        shell: cmd
+        run: |
+          for %%f in (tests\test_error.c tests\test_files.c tests\test_fs.c tests\test_memory.c tests\test_system.c tests\test_text.c) do (
+            cl /nologo /std:c11 /W4 /WX /wd4200 /Fe:%%~nf.exe %%f || exit /b 1
+            %%~nf.exe || exit /b 1
+          )
+
+      - name: the same header from C++
+        shell: cmd
+        run: |
+          cl /nologo /std:c++17 /W4 /WX /wd4200 /Fe:test_cxx.exe tests\test_cxx.cpp || exit /b 1
+          test_cxx.exe || exit /b 1
+
+  # Big-endian and 64-bit ARM under emulation. s390x is the one that matters:
+  # it caught the arena taking the width of max_align_t for its alignment,
+  # which is 24 there and 16 on x86-64, where the mistake is invisible.
+  cross-architecture:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/s390x, linux/arm64]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+
+      - name: test
+        run: |
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "$PWD:/src" -w /src gcc:14 \
+            sh -c 'make check-c11 && make test'
+
   # A short run on every push. It will not find much in sixty seconds, but it
   # does prove the targets still build and that the corpus in the repository
   # is clean. Long runs are a manual make FUZZ_SECS=600 fuzz.

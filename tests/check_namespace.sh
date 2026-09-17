@@ -36,8 +36,14 @@ if [ -n "$leaked" ]; then
 fi
 
 # --- external symbols ----------------------------------------------------------
+# --defined-only is GNU and llvm; the BSD nm of an older macOS spells it -U.
+# Mach-O also prefixes every symbol with an underscore, which is the platform's
+# doing rather than the library's, so it is stripped before the check.
 $CC -std=c11 -c "$WORK/kit.c" -o "$WORK/kit.o"
-leaked=$(nm -g --defined-only "$WORK/kit.o" | awk '{print $3}' | grep -avE "$prefixed" || true)
+defined_symbols() {
+    nm -g --defined-only "$WORK/kit.o" 2>/dev/null || nm -g -U "$WORK/kit.o"
+}
+leaked=$(defined_symbols | awk '{print $3}' | sed 's/^_//' | grep -avE "$prefixed" | grep -av '^$' || true)
 if [ -n "$leaked" ]; then
     echo "unprefixed symbols:"; echo "$leaked" | sed 's/^/  /'; status=1
 fi
@@ -63,5 +69,5 @@ if [ -n "$leaked" ]; then
     echo "unprefixed types, enumerators or inline functions:"; echo "$leaked" | sed 's/^/  /'; status=1
 fi
 
-[ $status -eq 0 ] && echo "namespace: ok ($(comm -13 "$WORK/base.macros" "$WORK/kit.macros" | wc -l) macros, $(nm -g --defined-only "$WORK/kit.o" | wc -l) symbols, $(echo "$names" | wc -l) types and constants)"
+[ $status -eq 0 ] && echo "namespace: ok ($(comm -13 "$WORK/base.macros" "$WORK/kit.macros" | wc -l) macros, $(defined_symbols | wc -l) symbols, $(echo "$names" | wc -l) types and constants)"
 exit $status

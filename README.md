@@ -194,13 +194,21 @@ your own code sees, and leaves any feature macro you defined yourself alone.
 ## Status
 
 Known limitations and queued work are recorded in [TODO.md](TODO.md). The
-short version: Windows is covered by cross-compiling and running under wine
-rather than on a real Windows machine.
+short version: the platforms above are what has actually been run.
 
 ## Requirements
 
-C11, or C++17. Tested with gcc and clang on Linux, g++ and clang++ for the
-C++ path, and mingw-w64 under wine for Windows.
+C11, or C++17.
+
+| Verified here | How |
+|---|---|
+| Linux x86-64 | gcc and clang, the sanitizers, and C++17 with g++ and clang++ |
+| Linux arm64 | the suite under emulation |
+| Linux s390x | the suite under emulation, which is where big-endian is covered |
+| Windows | cross-compiled with mingw-w64 and run under wine |
+
+Continuous integration additionally builds on macOS, and on Windows with MSVC
+and the UCRT runtime, neither of which can be reached from a Linux machine.
 
 ## Using it from C++
 
