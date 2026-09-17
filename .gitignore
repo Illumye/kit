@@ -5,8 +5,9 @@
 *.exe
 
 # Example / test binaries
-/examples/cli
-/examples/build
+/examples/*
+!/examples/*.c
+!/examples/demo/
 /build/
 /tests/run_*
 

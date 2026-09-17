@@ -12,6 +12,9 @@ WARNINGS  = -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Wcast-qual \
 CFLAGS   ?= -std=c11 -O2 -g $(WARNINGS)
 LDLIBS    = -lm -pthread
 
+EXAMPLE_SRC := $(wildcard examples/*.c)
+EXAMPLE_BIN := $(patsubst examples/%.c,examples/%,$(EXAMPLE_SRC))
+
 TEST_SRC := $(wildcard tests/test_*.c)
 TEST_BIN := $(patsubst tests/%.c,tests/run_%,$(TEST_SRC))
 TEST_ASAN:= $(patsubst tests/%.c,tests/run_%_asan,$(TEST_SRC))
@@ -127,30 +130,40 @@ check-windows: $(WIN_BIN)
 
 # --- examples -----------------------------------------------------------------
 
-examples: examples/cli examples/build
+examples: $(EXAMPLE_BIN)
 
-examples/cli: examples/cli.c kit.h
-	$(CC) $(CFLAGS) $< -o $@
+examples/%: examples/%.c kit.h
+	$(CC) $(CFLAGS) $< -o $@ $(LDLIBS)
 
-examples/build: examples/build.c kit.h
-	$(CC) $(CFLAGS) $< -o $@
-
-# The example build tool is the integration test: it drives the option parser,
-# the filesystem layer, the temporary allocator, the command runner and the
-# logger at once, which no unit test does. The logger writes to stderr, hence
-# the redirections.
-check-examples: examples/build examples/cli
+# The examples are the integration tests: each one drives several modules at
+# once, the way a real program would, which no unit test does. They are run
+# here and their output is checked, so an example that stops working stops the
+# build. check_examples.sh additionally fails if any public name is shown
+# nowhere.
+check-examples: $(EXAMPLE_BIN)
 	@./examples/build --clean > /dev/null 2>&1
 	@./examples/build -r 2>&1 | grep -q 'hello, world'
 	@./examples/build    2>&1 | grep -q '0 file(s) compiled'
 	@touch examples/demo/greet.h
 	@./examples/build    2>&1 | grep -q '2 file(s) compiled'
-	@./examples/cli --help > /dev/null
 	@./examples/build --clean > /dev/null 2>&1
-	@echo "examples: ok"
+	@./examples/cli --help > /dev/null
+	@./examples/config examples/demo/app.conf | grep -q '^port        8080'
+	@./examples/config examples/demo/app.conf --list | grep -q 'paths.log'
+	@./examples/config examples/demo/broken.conf 2>&1 | grep -q 'expected a whole number'
+	@./examples/wordfreq --top 3 examples/demo/prose.txt | grep -q 'most common: errors'
+	@./examples/tree --depth 2 examples/demo | grep -q 'app.conf'
+	@./examples/orbit --bodies 3 --steps 50 | grep -q 'spin axis'
+	@./examples/runner -- echo hello | grep -q '^hello$$'
+	@./examples/runner --check no-such-program 2>&1 | grep -q 'missing'
+	@rm -rf build/journal
+	@./examples/journal --dir build/journal --limit 700 --lines 20 --quiet 2>&1 \
+	   | grep -q '20 lines written'
+	@rm -rf build/journal
+	@./tests/check_examples.sh
 
 clean:
 	rm -f $(TEST_BIN) $(TEST_ASAN) $(WIN_BIN) $(FUZZ_BIN) tests/run_test_cxx tests/run_coexistence \
-	      examples/cli examples/build .compile-check.c .cxx-check.cpp
+	      $(EXAMPLE_BIN) .compile-check.c .cxx-check.cpp
 	rm -rf build
 	rm -rf utest-tmp-*

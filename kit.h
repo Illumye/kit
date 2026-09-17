@@ -599,6 +599,10 @@ static inline int kit_fs_stale1(const char *output, const char *input, KitError 
 /* Linear search writing the index of the first match into `out_index`, or
  * (da)->count when there is none. Portable everywhere, unlike
  * kit_array_contains.
+ *
+ * Both compare with ==, so they apply to arrays of numbers, pointers and
+ * other scalars. An array of structs needs a loop of your own, with whatever
+ * "the same" means for it.
  * Example:
  *   size_t at;
  *   kit_array_find(&my_array, 42, at);

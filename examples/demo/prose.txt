@@ -1,0 +1,5 @@
+The library is a single header. The header is copied into a project and it is
+used. A toolkit that is not used is a toolkit that is not useful, and the
+measure of a toolkit is the code it removes from the project that uses it.
+Errors say what went wrong and where. Errors that say nothing are worse than
+no errors at all.

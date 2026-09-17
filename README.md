@@ -135,44 +135,35 @@ under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 
 ## Examples
 
-`examples/build.c` is a build tool in one file. It compiles `examples/demo`
-into an executable, skips any step whose output is newer than its inputs, and
-rebuilds when a header changes. It uses the option parser, the filesystem
-layer, the scratch allocator, the command runner and the logger together, so
-it doubles as the integration test that `make check-examples` runs.
+Seven programs under `examples/`, each one a small tool rather than a tour of
+the API. Between them they use every public name in the header, which
+`make check-examples` enforces: add a function without showing it anywhere and
+the build stops.
+
+| Example | What it does | What it leans on |
+|---|---|---|
+| `build.c` | Compiles `examples/demo` like a small make | filesystem, staleness, processes, scratch |
+| `config.c` | Reads an INI file into a map | strings, map, arena, errors with context |
+| `journal.c` | Rotates a log file when it grows | filesystem writes, logger configuration, error codes |
+| `orbit.c` | Steps a few bodies around a centre | vectors, scalar maths, arena, timer |
+| `runner.c` | Reports on other programs and runs them | commands, processes, captured output |
+| `tree.c` | Walks a directory and measures it | filesystem, paths, scratch, timer |
+| `wordfreq.c` | Counts words in a text | string views, map, arrays, buffers, hashing |
+| `cli.c` | Option parsing on its own | command line |
 
 ```sh
 make examples
-./examples/build -r      # build and run
-./examples/build         # nothing to do
-./examples/build --clean
+./examples/config examples/demo/app.conf --list
+./examples/wordfreq --top 5 examples/demo/prose.txt
+./examples/tree --depth 2 examples
+./examples/runner --check cc make git
+./examples/orbit --bodies 5 --steps 500
+./examples/journal --dir build/journal --limit 2048 --lines 200
 ```
 
-`examples/cli.c` is a smaller one, showing only the option parsing.
-
-## Fuzzing
-
-`tests/fuzz` holds four libFuzzer targets, over the string parsers, the
-path helpers, the option parser and the hash map. Two of them are differential:
-the numeric parsers are compared against `strtoll` and `strtoull`, and the hash
-map against a naive array applying the same operations. The path target
-allocates every destination buffer at exactly the requested size, so a
-one-byte overrun is a fault rather than silence.
-
-```sh
-make fuzz                 # 15 seconds per target
-make FUZZ_SECS=600 fuzz   # ten minutes per target
-```
-
-The harness has been mutation tested: injecting a leading-space bug into
-`kit_str_to_i64` and an off-by-one into `kit_path_join` is caught within
-seconds, by the differential assertion and by AddressSanitizer respectively.
-
-No corpus is committed, on purpose. These targets saturate their reachable
-code almost immediately: a 180-second run reaches exactly the coverage a
-20-second run does, 113 million executions finding nothing a first few million
-did not. A stored corpus would be a couple of megabytes of blobs buying
-nothing, so each run rediscovers what it needs.
+The one that reads best as documentation is `config.c`: a parse failure there
+carries the line number, the file name and what was expected, which is the
+whole point of the error module.
 
 ## Configuration
 
