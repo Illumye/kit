@@ -183,7 +183,7 @@ TEST(error_truncation_never_splits_a_character) {
         char text[2 * KIT_ERROR_CAPACITY];
         size_t n = 0;
         for (int i = 0; i < shift; i++) text[n++] = 'a';
-        while (n + 2 < sizeof(text)) { text[n++] = (char)0xC3; text[n++] = (char)0xA9; }
+        while (n + 2 < sizeof(text)) { memcpy(text + n, "\xC3\xA9", 2); n += 2; }
         text[n] = '\0';
 
         KitError err = KIT_ZEROED;

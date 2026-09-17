@@ -21,7 +21,7 @@ TEST(arena_allocates_aligned_zeroed_blocks) {
 
     /* A one-byte block must not leave the next one misaligned. */
     void **ptr = kit_arena_alloc(&a, sizeof(void *));
-    CHECK_INT((uintptr_t)ptr % KIT_ALIGNOF(max_align_t), 0);
+    CHECK_INT((uintptr_t)ptr % KIT_MAX_ALIGN, 0);
     CHECK(*ptr == NULL);
 
     int *nums = kit_arena_alloc_array(&a, int, 16);
@@ -119,7 +119,7 @@ TEST(arena_mark_and_rewind) {
 
     /* The reclaimed space is handed out again. */
     char *reused = kit_arena_alloc(&a, 8);
-    CHECK(kit_arena_used(&a) <= used_at_mark + 8 + KIT_ALIGNOF(max_align_t));
+    CHECK(kit_arena_used(&a) <= used_at_mark + 8 + KIT_MAX_ALIGN);
     CHECK(reused != NULL);
 
     /* A mark taken from an empty arena rewinds everything. */

@@ -178,6 +178,18 @@ extern "C" {
 #    define KIT_ALIGNOF(T) _Alignof(T)
 #endif
 
+/* The strictest alignment a standard type can ask for. max_align_t would name
+ * it, but MSVC does not declare it in C mode, so the union names it instead
+ * and every platform answers the same way. */
+typedef union {
+    long long   as_integer;
+    long double as_real;
+    void       *as_pointer;
+    void      (*as_function)(void);
+} KitMaxAlign;
+
+#define KIT_MAX_ALIGN KIT_ALIGNOF(KitMaxAlign)
+
 /* A zeroed aggregate. C spells it {0} and C++ warns about the fields that
  * leaves out; C++ spells it {} and C rejects that before C23. Library types
  * are all designed to start zeroed, so this is the portable way to say so:
@@ -754,7 +766,7 @@ typedef struct {
  * A zero-initialised KitArena behaves identically, minus the preallocation. */
 KitArena kit_arena_make(size_t size);
 
-/* Aligned for max_align_t, which suits every standard type. */
+/* Aligned for KitMaxAlign, which suits every standard type. */
 void *kit_arena_alloc(KitArena *a, size_t size);
 
 /* For over-aligned types: SIMD vectors, cache-line padding. `align` must be a
@@ -2470,7 +2482,7 @@ void *kit_arena_alloc_aligned(KitArena *a, size_t size, size_t align) {
 }
 
 void *kit_arena_alloc(KitArena *a, size_t size) {
-    return kit_arena_alloc_aligned(a, size, KIT_ALIGNOF(max_align_t));
+    return kit_arena_alloc_aligned(a, size, KIT_MAX_ALIGN);
 }
 
 char *kit_arena_strndup(KitArena *a, const char *s, size_t n) {

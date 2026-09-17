@@ -48,9 +48,13 @@ tests/run_%_asan: tests/%.c kit.h tests/utest.h
 test: $(TEST_BIN)
 	@rc=0; for t in $(TEST_BIN); do ./$$t || rc=1; done; exit $$rc
 
+# LeakSanitizer ships with AddressSanitizer on Linux only; asking for it
+# anywhere else aborts the process before the first test runs.
+LEAK_CHECK := $(shell [ "`uname -s`" = Linux ] && echo 1 || echo 0)
+
 test-asan: $(TEST_ASAN)
 	@rc=0; for t in $(TEST_ASAN); do \
-		ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 ./$$t || rc=1; \
+		ASAN_OPTIONS=detect_leaks=$(LEAK_CHECK) UBSAN_OPTIONS=print_stacktrace=1 ./$$t || rc=1; \
 	done; exit $$rc
 
 # The header requests the POSIX symbols it needs, so a strict -std=c11 with no
