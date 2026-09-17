@@ -13,8 +13,10 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 prefixed='^(kit_|kit__|Kit|KIT_|KIT__)'
-# Feature-test macros are requests to the C library, not names of ours.
-allowed='^(_DEFAULT_SOURCE|__USE_MINGW_ANSI_STDIO|_CRT_SECURE_NO_WARNINGS|WIN32_LEAN_AND_MEAN)$'
+# Feature-test macros are requests to the C library, not names of ours. Each
+# library has its own: glibc and musl read _DEFAULT_SOURCE, macOS
+# _DARWIN_C_SOURCE.
+allowed='^(_DEFAULT_SOURCE|_DARWIN_C_SOURCE|__USE_MINGW_ANSI_STDIO|_CRT_SECURE_NO_WARNINGS|WIN32_LEAN_AND_MEAN)$'
 status=0
 
 # --- macros ------------------------------------------------------------------
@@ -24,7 +26,11 @@ grep -E '^#\s*include\s*<' "$HEADER" \
     | grep -vE '<(windows|io)\.h>' \
     | sed 's/^#\s*include/#include/' > "$WORK/system.h"
 
-{ echo '#define _DEFAULT_SOURCE'; cat "$WORK/system.h"; } > "$WORK/base.c"
+case $(uname -s) in
+    Darwin) feature='#define _DARWIN_C_SOURCE';;
+    *)      feature='#define _DEFAULT_SOURCE';;
+esac
+{ echo "$feature"; cat "$WORK/system.h"; } > "$WORK/base.c"
 { echo '#define KIT_IMPLEMENTATION'; echo "#include \"$PWD/$HEADER\""; } > "$WORK/kit.c"
 
 $CC -std=c11 -dM -E "$WORK/base.c" | awk '{print $2}' | sed 's/(.*//' | sort -u > "$WORK/base.macros"
