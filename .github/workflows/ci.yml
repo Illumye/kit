@@ -1,9 +1,14 @@
 name: tests
 
+# Documentation cannot break a build, and the matrix spans four operating
+# systems and four architectures. Public repositories are not billed for any of
+# it, but the queue is shared with everyone else's work.
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md', LICENSE]
   pull_request:
+    paths-ignore: ['**.md', LICENSE]
   workflow_dispatch:
 
 jobs:
