@@ -6,7 +6,7 @@ oversight: the defects found during that audit are fixed and covered by tests.
 
 ## Accepted by design
 
-**Single header, no modules.** `kit.h` is past 1700 lines and will keep
+**Single header, no modules.** `kit.h` is past 3400 lines and will keep
 growing. Splitting it would destroy the one property that makes it useful,
 namely that it drops into any project as a single file.
 
@@ -23,6 +23,15 @@ be a different API, not a change to this one.
 thread-local, so a thread that allocates scratch and exits without calling
 `kit_scratch_free` leaves its regions behind. That is the price of never
 synchronising, and it is one call to avoid.
+
+**The string parsers report no error.** `kit_str_to_i64` and its siblings
+return a bool and never log: "is this a number?" is a question, and a no is an
+answer rather than a failure. Only the caller knows whether a no means the file
+is malformed, and it has the context the message would need.
+
+**`kit_command_run_args` always logs.** Varargs must come last, so the
+shorthand cannot take a `KitError`. Build a `KitCommand` when the failure
+matters.
 
 **`KIT_PANIC` on allocation failure.** The dynamic arrays, the arena and the string
 builder abort rather than propagate an error. For the command-line tools this
