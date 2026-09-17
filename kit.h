@@ -23,19 +23,20 @@
  *
  * SECTIONS:
  *   1.  Logging      kit_log_*, KIT_LOG
- *   2.  Filesystem   kit_fs_*
- *   3.  Arrays       kit_array_*
- *   4.  Strings      kit_str_*
- *   5.  Arena        kit_arena_*, kit_scratch_*
- *   6.  Timer        kit_timer_*
- *   7.  Vectors      kit_vec2_*, kit_vec3_*
- *   8.  Command line kit_cli_*
- *   9.  Buffers      kit_buf_*
- *   10. Processes    kit_command_*, kit_process_*
- *   11. Hashing      kit_hash_*
- *   12. Map          kit_map_*
- *   13. Paths        kit_path_*
- *   14. Maths        kit_clampf, kit_lerpf, kit_remapf, KIT_MIN, KIT_MAX
+ *   2.  Errors       kit_error_*, KitError
+ *   3.  Filesystem   kit_fs_*
+ *   4.  Arrays       kit_array_*
+ *   5.  Strings      kit_str_*
+ *   6.  Arena        kit_arena_*, kit_scratch_*
+ *   7.  Timer        kit_timer_*
+ *   8.  Vectors      kit_vec2_*, kit_vec3_*
+ *   9.  Command line kit_cli_*
+ *   10. Buffers      kit_buf_*
+ *   11. Processes    kit_command_*, kit_process_*
+ *   12. Hashing      kit_hash_*
+ *   13. Map          kit_map_*
+ *   14. Paths        kit_path_*
+ *   15. Maths        kit_clampf, kit_lerpf, kit_remapf, KIT_MIN, KIT_MAX
  *
  * REQUIREMENTS:
  *   C11 or later. On POSIX systems the implementation uses clock_gettime(),
@@ -265,7 +266,100 @@ KIT_NORETURN void kit__panic(const char *file, int line,
 #define KIT_UNREACHABLE(msg) KIT_PANIC("UNREACHABLE: %s", msg)
 
 /* --------------------------------------------------------------------------
- * SECTION 2 : FILESYSTEM
+ * SECTION 2 : ERRORS
+ *
+ * A failure that says what went wrong, where it happened, and what the caller
+ * can do about it. The caller owns the KitError, usually on its stack, and the
+ * message lives inside it: recording an error never allocates, never fails,
+ * and leaves nothing to free.
+ *
+ *   KitError err = KIT_ZEROED;
+ *   char *text = kit_fs_read("config.ini", &err);
+ *   if (!text) {
+ *       kit_error_context(&err, "loading the configuration");
+ *       KIT_ERROR("%s", err.message);
+ *   }
+ *
+ *   loading the configuration: cannot open 'config.ini': No such file or directory
+ *
+ * The convention every fallible kit function follows: its last parameter is a
+ * KitError *. Given one, the function fills it and logs nothing, because what
+ * a failure means is the caller's decision. Given NULL, it logs the failure at
+ * KIT_LOG_ERROR instead, for code that has nothing better to do with it. A kit
+ * function never both logs a failure and reports it.
+ * -------------------------------------------------------------------------- */
+
+#ifndef KIT_ERROR_CAPACITY
+#define KIT_ERROR_CAPACITY 512
+#endif
+
+/* What the caller can do about a failure, rather than exactly what the system
+ * said: that precise value is kept in KitError.native. */
+typedef enum {
+    KIT_OK = 0,
+    KIT_ERR_NOT_FOUND,     /* nothing there: create it, or skip it        */
+    KIT_ERR_EXISTS,        /* already there                               */
+    KIT_ERR_NOT_EMPTY,     /* a directory that still has entries          */
+    KIT_ERR_WRONG_KIND,    /* a file where a directory was needed, or the
+                            * reverse                                     */
+    KIT_ERR_PERMISSION,    /* not allowed, or read-only                   */
+    KIT_ERR_INVALID,       /* malformed input: fix the input              */
+    KIT_ERR_RANGE,         /* a value, a size or a name is too large      */
+    KIT_ERR_NO_SPACE,      /* disk or quota full                          */
+    KIT_ERR_NO_MEMORY,     /* an allocation was refused                   */
+    KIT_ERR_BUSY,          /* in use or locked: retry later               */
+    KIT_ERR_INTERRUPTED,   /* a signal or a timeout: retry                */
+    KIT_ERR_IO,            /* the device itself failed                    */
+    KIT_ERR_PROCESS,       /* a child failed to start, or failed          */
+    KIT_ERR_UNSUPPORTED,   /* not possible here, e.g. across devices      */
+    KIT_ERR_OTHER
+} KitErrorCode;
+
+typedef struct {
+    KitErrorCode code;
+    int          native;      /* errno, GetLastError or exit status; 0 if none */
+    bool         truncated;   /* part of the message was dropped to fit        */
+    size_t       length;      /* of message, terminator excluded               */
+    char         message[KIT_ERROR_CAPACITY];
+} KitError;
+
+/* Records a failure, replacing any already recorded. Returns false, so that a
+ * bool function can end with
+ *
+ *   return kit_error_set(err, KIT_ERR_INVALID, "expected a number");
+ *
+ * With err NULL the message is logged instead, as described above. */
+bool kit_error_set(KitError *err, KitErrorCode code, const char *fmt, ...)
+    KIT_PRINTF_FORMAT(3, 4);
+
+/* Same, with the code derived from an errno value, which is also kept in
+ * native, and its description appended:
+ *
+ *   kit_error_errno(err, errno, "cannot open '%s'", path)
+ *   -> cannot open 'x': No such file or directory */
+bool kit_error_errno(KitError *err, int errnum, const char *fmt, ...)
+    KIT_PRINTF_FORMAT(3, 4);
+
+/* Prefixes the recorded message with where it happened, as the error travels
+ * up. The outermost context comes first and the root cause last. When the
+ * result does not fit, the middle is elided: the outermost context says where
+ * to look and the root cause says what broke, the steps in between matter
+ * least. Does nothing when err is NULL or records no failure. Returns false. */
+bool kit_error_context(KitError *err, const char *fmt, ...)
+    KIT_PRINTF_FORMAT(2, 3);
+
+/* Back to "no failure", ready for reuse. NULL is accepted. */
+void kit_error_clear(KitError *err);
+
+/* A stable lowercase name for a code, such as "not_found", for logs and for
+ * scripts that must not depend on the wording of a message. */
+const char *kit_error_code_name(KitErrorCode code);
+
+/* The category an errno value belongs to. */
+KitErrorCode kit_error_code_from_errno(int errnum);
+
+/* --------------------------------------------------------------------------
+ * SECTION 3 : FILESYSTEM
  * -------------------------------------------------------------------------- */
 
 /* Read an entire file into a malloc'd, NUL-terminated buffer (caller owns it).
@@ -372,7 +466,7 @@ static inline int kit_fs_stale1(const char *output, const char *input) {
 }
 
 /* --------------------------------------------------------------------------
- * SECTION 3 : ARRAYS
+ * SECTION 4 : ARRAYS
  *
  * Any struct with:
  *   T      *items;
@@ -499,7 +593,7 @@ static inline int kit_fs_stale1(const char *output, const char *input) {
     } while (0)
 
 /* --------------------------------------------------------------------------
- * SECTION 4 : STRINGS
+ * SECTION 5 : STRINGS
  *
  * A non-owning slice over existing memory. Never NUL-terminated.
  * Use KIT_STR_FMT / KIT_STR_ARG with printf.
@@ -583,7 +677,7 @@ bool kit_str_to_double(KitStr sv, double *out);
 char *kit_str_dup(KitStr sv);
 
 /* --------------------------------------------------------------------------
- * SECTION 5 : ARENA
+ * SECTION 6 : ARENA
  * -------------------------------------------------------------------------- */
 
 /* A bump allocator over a chain of regions. Running out of room grows the
@@ -656,7 +750,7 @@ KitArenaMark kit_arena_mark(const KitArena *a);
 void       kit_arena_rewind(KitArena *a, KitArenaMark mark);
 
 /* --------------------------------------------------------------------------
- * SECTION 5b : SCRATCH MEMORY
+ * SECTION 6b : SCRATCH MEMORY
  *
  * A process-wide scratch arena for strings that live until the end of the
  * current step: a path being assembled, a formatted message, a command line.
@@ -696,7 +790,7 @@ void       kit_scratch_reset(void);
 void       kit_scratch_free(void);
 
 /* --------------------------------------------------------------------------
- * SECTION 6 : TIMER
+ * SECTION 7 : TIMER
  * -------------------------------------------------------------------------- */
 
 typedef struct {
@@ -712,7 +806,7 @@ double    kit_timer_s(KitTimer sw);
 double    kit_timer_ms(KitTimer sw);
 
 /* --------------------------------------------------------------------------
- * SECTION 7 : VECTORS
+ * SECTION 8 : VECTORS
  *
  * Define KIT_NO_VEC_MATH before including to skip this section and avoid
  * the dependency on -lm.
@@ -753,7 +847,7 @@ KitVec3  kit_vec3_cross(KitVec3 a, KitVec3 b);
 #endif /* KIT_NO_VEC_MATH */
 
 /* --------------------------------------------------------------------------
- * SECTION 8 : COMMAND LINE
+ * SECTION 9 : COMMAND LINE
  * -------------------------------------------------------------------------- */
 
 /* Shift and return the next argument (NULL when exhausted). */
@@ -817,7 +911,7 @@ void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t 
     kit_cli_usage((fp), (prog), (opts), KIT_COUNTOF(opts))
 
 /* --------------------------------------------------------------------------
- * SECTION 9 : BUFFERS
+ * SECTION 10 : BUFFERS
  * -------------------------------------------------------------------------- */
 
 typedef struct {
@@ -842,7 +936,7 @@ void kit_buf_reset(KitBuf *sb);
 void kit_buf_free(KitBuf *sb);
 
 /* --------------------------------------------------------------------------
- * SECTION 10 : PROCESSES
+ * SECTION 11 : PROCESSES
  *
  * A KitCommand is an argument list; running it gives a KitProcess.
  *   kit_command_run(c)          synchronous, inherits stdout and stderr
@@ -913,7 +1007,7 @@ void kit_command_reset(KitCommand *c);
 void kit_command_free(KitCommand *c);
 
 /* --------------------------------------------------------------------------
- * SECTION 11 : HASHING
+ * SECTION 12 : HASHING
  * -------------------------------------------------------------------------- */
 
 /* djb2 over a NUL-terminated string, and over arbitrary bytes.
@@ -930,7 +1024,7 @@ uint32_t kit_hash_bytes(const void *data, size_t len);
 uint32_t kit_hash_mix32(uint32_t h);
 
 /* --------------------------------------------------------------------------
- * SECTION 12 : MAP
+ * SECTION 13 : MAP
  *
  * String-keyed, void*-valued hash map (open addressing, linear probing).
  * Keys are NOT copied: the caller must ensure they outlive the map.
@@ -986,7 +1080,7 @@ void  kit_map_free(KitMap *hm);
         if (kit_map_entry_live(it))
 
 /* --------------------------------------------------------------------------
- * SECTION 13 : PATHS
+ * SECTION 14 : PATHS
  * -------------------------------------------------------------------------- */
 
 #ifdef _WIN32
@@ -1012,7 +1106,7 @@ char *kit_path_join(char *buf, size_t bufsz, const char *a, const char *b);
 bool  kit_path_is_absolute(const char *path);
 
 /* --------------------------------------------------------------------------
- * SECTION 14 : MATHS
+ * SECTION 15 : MATHS
  * -------------------------------------------------------------------------- */
 
 #define KIT_MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -1238,6 +1332,221 @@ void kit__panic(const char *file, int line, const char *fmt, ...) {
     kit__stream_unlock(out);
     abort();
 }
+
+/* --------------------------------------------------------------------------
+ * Errors
+ * -------------------------------------------------------------------------- */
+
+/* The largest prefix of s[0, len) that does not end inside a UTF-8 sequence,
+ * so that cutting a message never leaves half a character behind. */
+static size_t kit__utf8_cut(const char *s, size_t len) {
+    while (len > 0 && ((unsigned char)s[len] & 0xC0) == 0x80) len--;
+    return len;
+}
+
+/* Marks a message that did not fit: cut at a character boundary and end it
+ * with "..." so a reader can tell. */
+static void kit__error_mark_cut(KitError *err) {
+    size_t keep = sizeof(err->message) - 1 - 3;
+    if (keep > err->length) keep = err->length;
+    keep = kit__utf8_cut(err->message, keep);
+    memcpy(err->message + keep, "...", 4);
+    err->length    = keep + 3;
+    err->truncated = true;
+}
+
+static void kit__error_vappend(KitError *err, const char *fmt, va_list ap) {
+    size_t room = sizeof(err->message) - err->length;
+    int    n    = vsnprintf(err->message + err->length, room, fmt, ap);
+    if (n < 0) return;
+    if ((size_t)n >= room) {
+        err->length    = sizeof(err->message) - 1;
+        err->truncated = true;
+    } else {
+        err->length += (size_t)n;
+    }
+}
+
+static void kit__error_append(KitError *err, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    kit__error_vappend(err, fmt, ap);
+    va_end(ap);
+}
+
+/* Formats into err, or into a scratch KitError that is logged when err is
+ * NULL. This is the one place the "report or log, never both" rule lives. */
+static bool kit__error_record(KitError *err, KitErrorCode code, int native,
+                              const char *detail, const char *fmt, va_list ap) {
+    KitError  logged;
+    KitError *target = err ? err : &logged;
+
+    target->code      = code;
+    target->native    = native;
+    target->truncated = false;
+    target->length    = 0;
+    target->message[0] = '\0';
+
+    kit__error_vappend(target, fmt, ap);
+    if (detail && !target->truncated) kit__error_append(target, ": %s", detail);
+    if (target->truncated) kit__error_mark_cut(target);
+
+    if (!err) kit__log(KIT_LOG_ERROR, __FILE__, __LINE__, "%s", target->message);
+    return false;
+}
+
+bool kit_error_set(KitError *err, KitErrorCode code, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    kit__error_record(err, code, 0, NULL, fmt, ap);
+    va_end(ap);
+    return false;
+}
+
+bool kit_error_errno(KitError *err, int errnum, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    kit__error_record(err, kit_error_code_from_errno(errnum), errnum,
+                      strerror(errnum), fmt, ap);
+    va_end(ap);
+    return false;
+}
+
+bool kit_error_context(KitError *err, const char *fmt, ...) {
+    if (!err || err->code == KIT_OK) return false;
+
+    size_t cap = sizeof(err->message);
+    char   prefix[KIT_ERROR_CAPACITY];
+
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(prefix, sizeof(prefix), fmt, ap);
+    va_end(ap);
+    if (n < 0) return false;
+
+    size_t plen = (size_t)n < sizeof(prefix) ? (size_t)n : sizeof(prefix) - 1;
+
+    /* Everything fits: shift the message right and write the prefix in. */
+    if (plen + 2 + err->length <= cap - 1) {
+        memmove(err->message + plen + 2, err->message, err->length + 1);
+        memcpy(err->message, prefix, plen);
+        memcpy(err->message + plen, ": ", 2);
+        err->length += plen + 2;
+        return false;
+    }
+
+    /* It does not. The context may take half of the room at most, and the
+     * rest goes to the tail of the existing message, which is where its root
+     * cause is, behind an ellipsis that marks the elided middle. */
+    char   joined[KIT_ERROR_CAPACITY];
+    size_t half = (cap - 1) / 2;
+    size_t used = 0;
+
+    if (plen > half) {
+        size_t keep = kit__utf8_cut(prefix, half - 3);
+        memcpy(joined, prefix, keep);
+        memcpy(joined + keep, "...", 3);
+        used = keep + 3;
+    } else {
+        memcpy(joined, prefix, plen);
+        used = plen;
+    }
+    memcpy(joined + used, ": ...", 5);
+    used += 5;
+
+    size_t room  = cap - 1 - used;
+    size_t start = err->length > room ? err->length - room : 0;
+    while (start < err->length && ((unsigned char)err->message[start] & 0xC0) == 0x80) start++;
+
+    size_t tail = err->length - start;
+    memcpy(joined + used, err->message + start, tail);
+    used += tail;
+    joined[used] = '\0';
+
+    memcpy(err->message, joined, used + 1);
+    err->length    = used;
+    err->truncated = true;
+    return false;
+}
+
+void kit_error_clear(KitError *err) {
+    if (!err) return;
+    err->code       = KIT_OK;
+    err->native     = 0;
+    err->truncated  = false;
+    err->length     = 0;
+    err->message[0] = '\0';
+}
+
+const char *kit_error_code_name(KitErrorCode code) {
+    switch (code) {
+        case KIT_OK:              return "ok";
+        case KIT_ERR_NOT_FOUND:   return "not_found";
+        case KIT_ERR_EXISTS:      return "exists";
+        case KIT_ERR_NOT_EMPTY:   return "not_empty";
+        case KIT_ERR_WRONG_KIND:  return "wrong_kind";
+        case KIT_ERR_PERMISSION:  return "permission";
+        case KIT_ERR_INVALID:     return "invalid";
+        case KIT_ERR_RANGE:       return "range";
+        case KIT_ERR_NO_SPACE:    return "no_space";
+        case KIT_ERR_NO_MEMORY:   return "no_memory";
+        case KIT_ERR_BUSY:        return "busy";
+        case KIT_ERR_INTERRUPTED: return "interrupted";
+        case KIT_ERR_IO:          return "io";
+        case KIT_ERR_PROCESS:     return "process";
+        case KIT_ERR_UNSUPPORTED: return "unsupported";
+        case KIT_ERR_OTHER:       return "other";
+    }
+    return "unknown";
+}
+
+/* An if chain rather than a switch: several of these share a value on some
+ * systems (EAGAIN and EWOULDBLOCK, EEXIST and ENOTEMPTY on AIX), and some do
+ * not exist at all on Windows, hence the guards. */
+KitErrorCode kit_error_code_from_errno(int e) {
+    if (e == 0)            return KIT_OK;
+    if (e == ENOENT)       return KIT_ERR_NOT_FOUND;
+    if (e == EEXIST)       return KIT_ERR_EXISTS;
+#ifdef ENOTEMPTY
+    if (e == ENOTEMPTY)    return KIT_ERR_NOT_EMPTY;
+#endif
+    if (e == EISDIR)       return KIT_ERR_WRONG_KIND;
+    if (e == ENOTDIR)      return KIT_ERR_WRONG_KIND;
+    if (e == EACCES)       return KIT_ERR_PERMISSION;
+    if (e == EPERM)        return KIT_ERR_PERMISSION;
+    if (e == EROFS)        return KIT_ERR_PERMISSION;
+    if (e == EINVAL)       return KIT_ERR_INVALID;
+    if (e == EILSEQ)       return KIT_ERR_INVALID;
+    if (e == ERANGE)       return KIT_ERR_RANGE;
+    if (e == ENAMETOOLONG) return KIT_ERR_RANGE;
+    if (e == E2BIG)        return KIT_ERR_RANGE;
+    if (e == EFBIG)        return KIT_ERR_RANGE;
+#ifdef EOVERFLOW
+    if (e == EOVERFLOW)    return KIT_ERR_RANGE;
+#endif
+    if (e == ENOSPC)       return KIT_ERR_NO_SPACE;
+#ifdef EDQUOT
+    if (e == EDQUOT)       return KIT_ERR_NO_SPACE;
+#endif
+    if (e == ENOMEM)       return KIT_ERR_NO_MEMORY;
+    if (e == EBUSY)        return KIT_ERR_BUSY;
+#ifdef ETXTBSY
+    if (e == ETXTBSY)      return KIT_ERR_BUSY;
+#endif
+    if (e == EINTR)        return KIT_ERR_INTERRUPTED;
+    if (e == EAGAIN)       return KIT_ERR_INTERRUPTED;
+#ifdef ETIMEDOUT
+    if (e == ETIMEDOUT)    return KIT_ERR_INTERRUPTED;
+#endif
+    if (e == EIO)          return KIT_ERR_IO;
+    if (e == ENOSYS)       return KIT_ERR_UNSUPPORTED;
+    if (e == EXDEV)        return KIT_ERR_UNSUPPORTED;
+#ifdef ENOTSUP
+    if (e == ENOTSUP)      return KIT_ERR_UNSUPPORTED;
+#endif
+    return KIT_ERR_OTHER;
+}
+
 
 /* --------------------------------------------------------------------------
  * Files

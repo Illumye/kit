@@ -34,6 +34,7 @@ new one.
 | Module | Prefix | What it gives you |
 |---|---|---|
 | Logging | `kit_log`, `KIT_LOG` | Levels, configurable record fields, colour only on a terminal |
+| Errors | `kit_error`, `KitError` | Failures with a category, a native code and a context chain |
 | Filesystem | `kit_fs` | Streamed reads, recursive mkdir, sorted listing, staleness checks |
 | Arrays | `kit_array` | Growable arrays over any `{items, count, capacity}` struct |
 | Strings | `kit_str` | Non-owning slices: search, splitting, strict numeric parsing |
@@ -47,6 +48,30 @@ new one.
 | Paths | `kit_path` | `basename`, `dirname`, `join`, all bounded |
 
 Each module is documented where it is declared. Read the header.
+
+## Errors
+
+A failure should say what went wrong, where, and what the caller can do about
+it. The caller owns a `KitError`, usually on its stack, with the message inside
+it, so recording one never allocates and never fails.
+
+```c
+KitError err = KIT_ZEROED;
+if (!load_config("config.ini", &cfg, &err)) {
+    kit_error_context(&err, "starting the server");
+    KIT_ERROR("%s (%s)", err.message, kit_error_code_name(err.code));
+}
+```
+
+```
+starting the server: reading config.ini: line 12: expected an integer (invalid)
+```
+
+The code is a category that tells the caller what to do, `not_found`,
+`permission` or `busy` among others, and the platform's own value stays in
+`err.native`. Context is added outermost first as the error travels up. When
+the chain outgrows the buffer, the middle is elided and both the outermost
+context and the root cause are kept.
 
 ## A taste of it
 
@@ -94,7 +119,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 87 tests over six files, and the header compiles warning-free
+The suite is 102 tests over seven files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 
