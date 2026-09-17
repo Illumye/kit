@@ -214,7 +214,7 @@ typedef enum {
  *
  *   kit_log_set_fields(KIT_LOG_FIELD_DATE | KIT_LOG_FIELD_TIME |
  *                      KIT_LOG_FIELD_USER);
- *   KIT_LOG(KIT_LOG_INFO, "started");
+ *   KIT_INFO("started");
  *   -> [2026-09-12 (Sat)] [14:05:42] [illumye] started
  *
  * KIT_LOG_FIELD_COUNT numbers the records as they are emitted, which is how a
@@ -244,6 +244,14 @@ KIT_NORETURN void kit__panic(const char *file, int line,
                                      const char *fmt, ...) KIT_PRINTF_FORMAT(3, 4);
 
 #define KIT_LOG(level, ...)  kit__log(level, __FILE__, __LINE__, __VA_ARGS__)
+
+/* One macro per level, for the usual case of a level fixed at the call site.
+ * KIT_LOG stays for the rare one where the level is only known at run time. */
+#define KIT_DEBUG(...)     KIT_LOG(KIT_LOG_DEBUG, __VA_ARGS__)
+#define KIT_INFO(...)      KIT_LOG(KIT_LOG_INFO, __VA_ARGS__)
+#define KIT_WARN(...)      KIT_LOG(KIT_LOG_WARN, __VA_ARGS__)
+#define KIT_ERROR(...)     KIT_LOG(KIT_LOG_ERROR, __VA_ARGS__)
+#define KIT_CRITICAL(...)  KIT_LOG(KIT_LOG_CRITICAL, __VA_ARGS__)
 #define KIT_PANIC(...)       kit__panic(__FILE__, __LINE__, __VA_ARGS__)
 #define KIT_TODO(msg)        KIT_PANIC("TODO: %s", msg)
 #define KIT_UNREACHABLE(msg) KIT_PANIC("UNREACHABLE: %s", msg)
@@ -1243,7 +1251,7 @@ char *kit_fs_read_sized(const char *path, size_t *out_size) {
 
     f = fopen(path, "rb");
     if (!f) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_read: cannot open '%s': %s", path, strerror(errno));
+        KIT_ERROR("kit_fs_read: cannot open '%s': %s", path, strerror(errno));
         KIT_BAIL(false);
     }
 
@@ -1256,20 +1264,20 @@ char *kit_fs_read_sized(const char *path, size_t *out_size) {
 
     buffer = (char *)malloc(cap + 1);
     if (!buffer) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_read: out of memory reading '%s'", path);
+        KIT_ERROR("kit_fs_read: out of memory reading '%s'", path);
         KIT_BAIL(false);
     }
 
     for (;;) {
         if (len == cap) {
             if (cap > SIZE_MAX / 2 - 1) {
-                KIT_LOG(KIT_LOG_ERROR, "kit_fs_read: '%s' is too large to buffer", path);
+                KIT_ERROR("kit_fs_read: '%s' is too large to buffer", path);
                 KIT_BAIL(false);
             }
             cap *= 2;
             char *grown = (char *)realloc(buffer, cap + 1);
             if (!grown) {
-                KIT_LOG(KIT_LOG_ERROR, "kit_fs_read: out of memory reading '%s'", path);
+                KIT_ERROR("kit_fs_read: out of memory reading '%s'", path);
                 KIT_BAIL(false);
             }
             buffer = grown;
@@ -1281,12 +1289,12 @@ char *kit_fs_read_sized(const char *path, size_t *out_size) {
     }
 
     if (ferror(f)) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_read: read error on '%s': %s", path, strerror(errno));
+        KIT_ERROR("kit_fs_read: read error on '%s': %s", path, strerror(errno));
         KIT_BAIL(false);
     }
 
     buffer[len] = '\0';
-    KIT_LOG(KIT_LOG_DEBUG, "kit_fs_read: '%s' (%zu bytes)", path, len);
+    KIT_DEBUG("kit_fs_read: '%s' (%zu bytes)", path, len);
 
 cleanup:
     if (f) fclose(f);
@@ -1304,19 +1312,19 @@ char *kit_fs_read(const char *path) {
 bool kit_fs_write(const char *path, const void *data, size_t size) {
     FILE *f = fopen(path, "wb");
     if (!f) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_write: cannot open '%s': %s", path, strerror(errno));
+        KIT_ERROR("kit_fs_write: cannot open '%s': %s", path, strerror(errno));
         return false;
     }
 
     bool ok = (size == 0) || (fwrite(data, 1, size, f) == size);
-    if (!ok) KIT_LOG(KIT_LOG_ERROR, "kit_fs_write: short write on '%s': %s", path, strerror(errno));
+    if (!ok) KIT_ERROR("kit_fs_write: short write on '%s': %s", path, strerror(errno));
 
     if (fclose(f) != 0) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_write: cannot flush '%s': %s", path, strerror(errno));
+        KIT_ERROR("kit_fs_write: cannot flush '%s': %s", path, strerror(errno));
         ok = false;
     }
 
-    if (ok) KIT_LOG(KIT_LOG_DEBUG, "kit_fs_write: '%s' (%zu bytes)", path, size);
+    if (ok) KIT_DEBUG("kit_fs_write: '%s' (%zu bytes)", path, size);
     return ok;
 }
 
@@ -1500,23 +1508,23 @@ static bool kit__mkdir_one(const char *path) {
 #ifdef _WIN32
     if (CreateDirectoryA(path, NULL)) return true;
     if (GetLastError() == ERROR_ALREADY_EXISTS) return kit_fs_is_dir(path);
-    KIT_LOG(KIT_LOG_ERROR, "kit_fs_mkdir: cannot create '%s' (err=%lu)", path, GetLastError());
+    KIT_ERROR("kit_fs_mkdir: cannot create '%s' (err=%lu)", path, GetLastError());
     return false;
 #else
     if (mkdir(path, 0777) == 0) return true;
     if (errno == EEXIST) {
         if (kit_fs_is_dir(path)) return true;
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_mkdir: '%s' exists and is not a directory", path);
+        KIT_ERROR("kit_fs_mkdir: '%s' exists and is not a directory", path);
         return false;
     }
-    KIT_LOG(KIT_LOG_ERROR, "kit_fs_mkdir: cannot create '%s': %s", path, strerror(errno));
+    KIT_ERROR("kit_fs_mkdir: cannot create '%s': %s", path, strerror(errno));
     return false;
 #endif
 }
 
 bool kit_fs_mkdir(const char *path) {
     if (!path || !*path) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_mkdir: empty path");
+        KIT_ERROR("kit_fs_mkdir: empty path");
         return false;
     }
 
@@ -1550,7 +1558,7 @@ cleanup:
 bool kit_fs_copy(const char *src, const char *dst) {
 #ifdef _WIN32
     if (CopyFileA(src, dst, FALSE)) return true;
-    KIT_LOG(KIT_LOG_ERROR, "kit_fs_copy: '%s' -> '%s' failed (err=%lu)",
+    KIT_ERROR("kit_fs_copy: '%s' -> '%s' failed (err=%lu)",
         src, dst, GetLastError());
     return false;
 #else
@@ -1559,13 +1567,13 @@ bool kit_fs_copy(const char *src, const char *dst) {
 
     in = open(src, O_RDONLY);
     if (in < 0) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_copy: cannot open '%s': %s", src, strerror(errno));
+        KIT_ERROR("kit_fs_copy: cannot open '%s': %s", src, strerror(errno));
         KIT_BAIL(false);
     }
 
     struct stat st;
     if (fstat(in, &st) != 0) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_copy: cannot stat '%s': %s", src, strerror(errno));
+        KIT_ERROR("kit_fs_copy: cannot stat '%s': %s", src, strerror(errno));
         KIT_BAIL(false);
     }
 
@@ -1573,7 +1581,7 @@ bool kit_fs_copy(const char *src, const char *dst) {
      * briefly visible with wider permissions than the source. */
     out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode & 07777);
     if (out < 0) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_copy: cannot open '%s': %s", dst, strerror(errno));
+        KIT_ERROR("kit_fs_copy: cannot open '%s': %s", dst, strerror(errno));
         KIT_BAIL(false);
     }
 
@@ -1583,14 +1591,14 @@ bool kit_fs_copy(const char *src, const char *dst) {
         if (n == 0) break;
         if (n < 0) {
             if (errno == EINTR) continue;
-            KIT_LOG(KIT_LOG_ERROR, "kit_fs_copy: read '%s': %s", src, strerror(errno));
+            KIT_ERROR("kit_fs_copy: read '%s': %s", src, strerror(errno));
             KIT_BAIL(false);
         }
         for (ssize_t off = 0; off < n; ) {
             ssize_t w = write(out, buf + off, (size_t)(n - off));
             if (w < 0) {
                 if (errno == EINTR) continue;
-                KIT_LOG(KIT_LOG_ERROR, "kit_fs_copy: write '%s': %s", dst, strerror(errno));
+                KIT_ERROR("kit_fs_copy: write '%s': %s", dst, strerror(errno));
                 KIT_BAIL(false);
             }
             off += w;
@@ -1601,7 +1609,7 @@ cleanup:
     if (in >= 0) close(in);
     /* close() is where a deferred write error surfaces, so it is checked. */
     if (out >= 0 && close(out) != 0 && result) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_copy: cannot flush '%s': %s", dst, strerror(errno));
+        KIT_ERROR("kit_fs_copy: cannot flush '%s': %s", dst, strerror(errno));
         result = false;
     }
     return result;
@@ -1611,13 +1619,13 @@ cleanup:
 bool kit_fs_remove(const char *path) {
 #ifdef _WIN32
     if (DeleteFileA(path)) return true;
-    KIT_LOG(KIT_LOG_ERROR, "kit_fs_remove: cannot remove '%s' (err=%lu)", path, GetLastError());
+    KIT_ERROR("kit_fs_remove: cannot remove '%s' (err=%lu)", path, GetLastError());
     return false;
 #else
     /* unlink rather than remove: remove() also takes an empty directory on
      * POSIX and not on Windows, and one behaviour on both is worth more. */
     if (unlink(path) == 0) return true;
-    KIT_LOG(KIT_LOG_ERROR, "kit_fs_remove: cannot remove '%s': %s", path, strerror(errno));
+    KIT_ERROR("kit_fs_remove: cannot remove '%s': %s", path, strerror(errno));
     return false;
 #endif
 }
@@ -1625,11 +1633,11 @@ bool kit_fs_remove(const char *path) {
 bool kit_fs_rmdir(const char *path) {
 #ifdef _WIN32
     if (RemoveDirectoryA(path)) return true;
-    KIT_LOG(KIT_LOG_ERROR, "kit_fs_rmdir: cannot remove '%s' (err=%lu)", path, GetLastError());
+    KIT_ERROR("kit_fs_rmdir: cannot remove '%s' (err=%lu)", path, GetLastError());
     return false;
 #else
     if (rmdir(path) == 0) return true;
-    KIT_LOG(KIT_LOG_ERROR, "kit_fs_rmdir: cannot remove '%s': %s", path, strerror(errno));
+    KIT_ERROR("kit_fs_rmdir: cannot remove '%s': %s", path, strerror(errno));
     return false;
 #endif
 }
@@ -1638,12 +1646,12 @@ bool kit_fs_rename(const char *from, const char *to) {
 #ifdef _WIN32
     /* Plain rename() refuses an existing destination on Windows. */
     if (MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING)) return true;
-    KIT_LOG(KIT_LOG_ERROR, "kit_fs_rename: '%s' -> '%s' failed (err=%lu)",
+    KIT_ERROR("kit_fs_rename: '%s' -> '%s' failed (err=%lu)",
         from, to, GetLastError());
     return false;
 #else
     if (rename(from, to) == 0) return true;
-    KIT_LOG(KIT_LOG_ERROR, "kit_fs_rename: '%s' -> '%s': %s", from, to, strerror(errno));
+    KIT_ERROR("kit_fs_rename: '%s' -> '%s': %s", from, to, strerror(errno));
     return false;
 #endif
 }
@@ -1685,7 +1693,7 @@ static bool kit__mtime(const char *path, Kit__Mtime *out) {
 int64_t kit_fs_mtime(const char *path) {
     Kit__Mtime t;
     if (!kit__mtime(path, &t)) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_mtime: cannot stat '%s': %s", path, strerror(errno));
+        KIT_ERROR("kit_fs_mtime: cannot stat '%s': %s", path, strerror(errno));
         return -1;
     }
     return t.sec;
@@ -1698,7 +1706,7 @@ int kit_fs_stale(const char *output, const char *const *inputs, size_t n_inputs)
     for (size_t i = 0; i < n_inputs; ++i) {
         Kit__Mtime in_time;
         if (!kit__mtime(inputs[i], &in_time)) {
-            KIT_LOG(KIT_LOG_ERROR, "kit_fs_stale: input '%s' is unreadable: %s",
+            KIT_ERROR("kit_fs_stale: input '%s' is unreadable: %s",
                 inputs[i], strerror(errno));
             return -1;
         }
@@ -1740,14 +1748,14 @@ bool kit_fs_list(const char *path, KitFileList *out) {
 #ifdef _WIN32
     char pattern[MAX_PATH];
     if (snprintf(pattern, sizeof(pattern), "%s\\*", path) >= (int)sizeof(pattern)) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_list: path too long: '%s'", path);
+        KIT_ERROR("kit_fs_list: path too long: '%s'", path);
         return false;
     }
 
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pattern, &fd);
     if (h == INVALID_HANDLE_VALUE) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_list: cannot open '%s' (err=%lu)", path, GetLastError());
+        KIT_ERROR("kit_fs_list: cannot open '%s' (err=%lu)", path, GetLastError());
         return false;
     }
     do {
@@ -1759,7 +1767,7 @@ bool kit_fs_list(const char *path, KitFileList *out) {
 #else
     DIR *dir = opendir(path);
     if (!dir) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_list: cannot open '%s': %s", path, strerror(errno));
+        KIT_ERROR("kit_fs_list: cannot open '%s': %s", path, strerror(errno));
         return false;
     }
 
@@ -1772,7 +1780,7 @@ bool kit_fs_list(const char *path, KitFileList *out) {
     /* readdir returns NULL both at the end and on failure; errno tells them
      * apart, which is why it is cleared before each call. */
     if (errno != 0) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_fs_list: error reading '%s': %s", path, strerror(errno));
+        KIT_ERROR("kit_fs_list: error reading '%s': %s", path, strerror(errno));
         result = false;
     }
     closedir(dir);
@@ -2160,7 +2168,7 @@ static bool kit__cli_assign(KitCliOpt *o, const char *val, const char *origin) {
     errno = 0;
     long v = strtol(val, &end, 10);
     if (end == val || *end != '\0' || errno == ERANGE || v < INT_MIN || v > INT_MAX) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_cli_parse: '%s' expects an integer, got '%s'", origin, val);
+        KIT_ERROR("kit_cli_parse: '%s' expects an integer, got '%s'", origin, val);
         return false;
     }
     *(int *)o->dst = (int)v;
@@ -2175,13 +2183,13 @@ static bool kit__cli_parse_short_group(KitCliOpt *opts, size_t n_opts, const cha
         char  name  = *c++;
         KitCliOpt  *match = kit__cli_find_short(opts, n_opts, name);
         if (!match) {
-            KIT_LOG(KIT_LOG_ERROR, "kit_cli_parse: unknown option '-%c' in '%s'", name, arg);
+            KIT_ERROR("kit_cli_parse: unknown option '-%c' in '%s'", name, arg);
             return false;
         }
 
         if (match->type == KIT_CLI_OPT_FLAG) {
             if (*c == '=') {
-                KIT_LOG(KIT_LOG_ERROR, "kit_cli_parse: '-%c' takes no argument", name);
+                KIT_ERROR("kit_cli_parse: '-%c' takes no argument", name);
                 return false;
             }
             *(bool *)match->dst = true;
@@ -2193,7 +2201,7 @@ static bool kit__cli_parse_short_group(KitCliOpt *opts, size_t n_opts, const cha
         else if (*c)     val = c;        /* -ofile  */
         else {                           /* -o file */
             if (++(*i) >= argc) {
-                KIT_LOG(KIT_LOG_ERROR, "kit_cli_parse: '-%c' requires an argument", name);
+                KIT_ERROR("kit_cli_parse: '-%c' requires an argument", name);
                 return false;
             }
             val = argv[*i];
@@ -2233,13 +2241,13 @@ bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv) {
 
         KitCliOpt *match = kit__cli_find_long(opts, n_opts, key, key_len);
         if (!match) {
-            KIT_LOG(KIT_LOG_ERROR, "kit_cli_parse: unknown option '%s'", arg);
+            KIT_ERROR("kit_cli_parse: unknown option '%s'", arg);
             return false;
         }
 
         if (match->type == KIT_CLI_OPT_FLAG) {
             if (eq) {
-                KIT_LOG(KIT_LOG_ERROR, "kit_cli_parse: '--%.*s' takes no argument",
+                KIT_ERROR("kit_cli_parse: '--%.*s' takes no argument",
                     (int)key_len, key);
                 return false;
             }
@@ -2250,7 +2258,7 @@ bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv) {
         const char *val = eq ? eq + 1 : NULL;
         if (!val) {
             if (++i >= *argc) {
-                KIT_LOG(KIT_LOG_ERROR, "kit_cli_parse: '%s' requires an argument", arg);
+                KIT_ERROR("kit_cli_parse: '%s' requires an argument", arg);
                 return false;
             }
             val = args[i];
@@ -2416,7 +2424,7 @@ KitProcess kit_command_spawn(KitCommand *c) {
 
     if (!CreateProcessA(NULL, cmdline, NULL, NULL, TRUE, 0,
                         NULL, NULL, &si, &pi)) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_command_spawn: CreateProcess failed (err=%lu)", GetLastError());
+        KIT_ERROR("kit_command_spawn: CreateProcess failed (err=%lu)", GetLastError());
         free(cmdline);
         return KIT_PROCESS_INVALID;
     }
@@ -2432,7 +2440,7 @@ bool kit_process_wait(KitProcess p) {
     GetExitCodeProcess(p, &exit_code);
     CloseHandle(p);
     if (exit_code != 0) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_process_wait: process exited with code %lu", exit_code);
+        KIT_ERROR("kit_process_wait: process exited with code %lu", exit_code);
         return false;
     }
     return true;
@@ -2452,14 +2460,14 @@ static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *err) {
 
     if (need_out) {
         if (!CreatePipe(&out_r, &out_w, &sa, 0)) {
-            KIT_LOG(KIT_LOG_ERROR, "kit_command_capture: CreatePipe failed (err=%lu)", GetLastError());
+            KIT_ERROR("kit_command_capture: CreatePipe failed (err=%lu)", GetLastError());
             return false;
         }
         SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
     }
     if (need_err) {
         if (!CreatePipe(&err_r, &err_w, &sa, 0)) {
-            KIT_LOG(KIT_LOG_ERROR, "kit_command_capture: CreatePipe failed (err=%lu)", GetLastError());
+            KIT_ERROR("kit_command_capture: CreatePipe failed (err=%lu)", GetLastError());
             if (out_r) { CloseHandle(out_r); CloseHandle(out_w); }
             return false;
         }
@@ -2487,7 +2495,7 @@ static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *err) {
     if (err_w) CloseHandle(err_w);
 
     if (!started) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_command_capture: CreateProcess failed (err=%lu)", GetLastError());
+        KIT_ERROR("kit_command_capture: CreateProcess failed (err=%lu)", GetLastError());
         if (out_r) CloseHandle(out_r);
         if (err_r) CloseHandle(err_r);
         return false;
@@ -2546,7 +2554,7 @@ KitProcess kit_command_spawn(KitCommand *c) {
     c->count--;   /* remove the sentinel regardless of outcome */
 
     if (pid < 0) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_command_spawn: fork failed: %s", strerror(errno));
+        KIT_ERROR("kit_command_spawn: fork failed: %s", strerror(errno));
         return KIT_PROCESS_INVALID;
     }
     if (pid == 0) {
@@ -2564,22 +2572,22 @@ bool kit_process_wait(KitProcess p) {
     if (p == KIT_PROCESS_INVALID) return false;
     int status;
     if (waitpid(p, &status, 0) < 0) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_process_wait: waitpid failed: %s", strerror(errno));
+        KIT_ERROR("kit_process_wait: waitpid failed: %s", strerror(errno));
         return false;
     }
     if (WIFEXITED(status)) {
         int code = WEXITSTATUS(status);
         if (code != 0) {
-            KIT_LOG(KIT_LOG_ERROR, "kit_process_wait: process exited with code %d", code);
+            KIT_ERROR("kit_process_wait: process exited with code %d", code);
             return false;
         }
         return true;
     }
     if (WIFSIGNALED(status)) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_process_wait: process killed by signal %d", WTERMSIG(status));
+        KIT_ERROR("kit_process_wait: process killed by signal %d", WTERMSIG(status));
         return false;
     }
-    KIT_LOG(KIT_LOG_ERROR, "kit_process_wait: process ended unexpectedly");
+    KIT_ERROR("kit_process_wait: process ended unexpectedly");
     return false;
 }
 
@@ -2597,11 +2605,11 @@ static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *err) {
     int ep[2] = { -1, -1 };
 
     if (need_out && pipe(op) < 0) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_command_capture: pipe failed: %s", strerror(errno));
+        KIT_ERROR("kit_command_capture: pipe failed: %s", strerror(errno));
         return false;
     }
     if (need_err && pipe(ep) < 0) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_command_capture: pipe failed: %s", strerror(errno));
+        KIT_ERROR("kit_command_capture: pipe failed: %s", strerror(errno));
         if (op[0] >= 0) { close(op[0]); close(op[1]); }
         return false;
     }
@@ -2611,7 +2619,7 @@ static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *err) {
     c->count--;
 
     if (pid < 0) {
-        KIT_LOG(KIT_LOG_ERROR, "kit_command_capture: fork failed: %s", strerror(errno));
+        KIT_ERROR("kit_command_capture: fork failed: %s", strerror(errno));
         if (op[0] >= 0) { close(op[0]); close(op[1]); }
         if (ep[0] >= 0) { close(ep[0]); close(ep[1]); }
         return false;
@@ -2651,7 +2659,7 @@ static bool kit__cmd_capture(KitCommand *c, KitBuf *out, KitBuf *err) {
     while (still_open > 0) {
         if (poll(fds, n, -1) < 0) {
             if (errno == EINTR) continue;
-            KIT_LOG(KIT_LOG_ERROR, "kit_command_capture: poll failed: %s", strerror(errno));
+            KIT_ERROR("kit_command_capture: poll failed: %s", strerror(errno));
             break;
         }
         for (nfds_t i = 0; i < n; i++) {

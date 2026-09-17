@@ -20,6 +20,10 @@ what its old name did.
 - **`return_defer` is `KIT_BAIL`**, and the label it jumps to is `cleanup:`
   instead of `defer:`.
 - **`LOG_WARNING` is `KIT_LOG_WARN`**, matching the label the logger prints.
+- **`LOG(LOG_INFO, ...)` is best written `KIT_INFO(...)`.** There is one macro
+  per level: `KIT_DEBUG`, `KIT_INFO`, `KIT_WARN`, `KIT_ERROR` and
+  `KIT_CRITICAL`. `KIT_LOG(level, ...)` remains for a level chosen at run
+  time.
 
 ## Every name
 

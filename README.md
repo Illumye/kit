@@ -75,7 +75,7 @@ int main(int argc, char **argv) {
         kit_command_free(&cmd);
     }
 
-    KIT_LOG(KIT_LOG_INFO, "%s is up to date", out);
+    KIT_INFO("%s is up to date", out);
     return 0;
 }
 ```
@@ -94,7 +94,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 86 tests over six files, and the header compiles warning-free
+The suite is 87 tests over six files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 

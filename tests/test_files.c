@@ -18,9 +18,9 @@ TEST(log_level_filters_lower_levels) {
 
     kit_log_set_output(fp);
     kit_log_set_level(KIT_LOG_WARN);
-    KIT_LOG(KIT_LOG_DEBUG, "invisible");
-    KIT_LOG(KIT_LOG_INFO,  "invisible");
-    KIT_LOG(KIT_LOG_ERROR, "visible");
+    KIT_DEBUG("invisible");
+    KIT_INFO("invisible");
+    KIT_ERROR("visible");
     fflush(fp);
 
     long size = ftell(fp);
@@ -46,7 +46,7 @@ TEST(log_omits_ansi_codes_when_not_a_tty) {
     kit_log_set_output(fp);
     kit_log_set_level(KIT_LOG_ERROR);
     kit_log_set_color(KIT_LOG_COLOR_AUTO);
-    KIT_LOG(KIT_LOG_ERROR, "plain text please");
+    KIT_ERROR("plain text please");
     fclose(fp);
     kit_log_set_output(NULL);
     kit_log_set_level(KIT_LOG_CRITICAL);
@@ -63,7 +63,7 @@ TEST(log_omits_ansi_codes_when_not_a_tty) {
     kit_log_set_output(fp);
     kit_log_set_level(KIT_LOG_ERROR);
     kit_log_set_color(KIT_LOG_COLOR_ALWAYS);
-    KIT_LOG(KIT_LOG_ERROR, "coloured");
+    KIT_ERROR("coloured");
     fclose(fp);
     kit_log_set_output(NULL);
     kit_log_set_level(KIT_LOG_CRITICAL);
@@ -141,6 +141,41 @@ TEST(log_fields_select_the_prefix) {
     remove(TMP_TXT);
 }
 
+/* Each level macro must reach its own level, and the source location must be
+ * the caller's line rather than a line inside the macro. */
+TEST(log_level_macros_map_to_their_levels) {
+    FILE *fp = fopen(TMP_TXT, "wb");
+    if (!CHECK(fp != NULL)) return;
+
+    kit_log_set_output(fp);
+    kit_log_set_level(KIT_LOG_DEBUG);
+    kit_log_set_color(KIT_LOG_COLOR_NEVER);
+    kit_log_set_fields(KIT_LOG_FIELD_LEVEL);
+
+    KIT_DEBUG("a");
+    KIT_INFO("b %d", 2);
+    KIT_WARN("c");
+    KIT_ERROR("d");
+    KIT_CRITICAL("e");
+    kit_log_set_fields(KIT_LOG_FIELD_LOCATION);
+    int line = __LINE__; KIT_INFO("here");
+    fclose(fp);
+
+    kit_log_set_output(NULL);
+    kit_log_set_level(KIT_LOG_CRITICAL);
+    kit_log_set_fields(KIT_LOG_FIELDS_DEFAULT);
+
+    char *text = kit_fs_read(TMP_TXT);
+    if (!CHECK(text != NULL)) return;
+    char expected[256];
+    snprintf(expected, sizeof(expected),
+             "[DEBUG] a\n[INFO] b 2\n[WARN] c\n[ERROR] d\n[CRIT] e\n[%s:%d] here\n",
+             __FILE__, line);
+    CHECK_STR(text, expected);
+    free(text);
+    kit_fs_remove(TMP_TXT);
+}
+
 TEST(log_field_count_numbers_the_records) {
     FILE *fp = fopen(TMP_TXT, "w");
     if (!CHECK(fp != NULL)) return;
@@ -151,7 +186,7 @@ TEST(log_field_count_numbers_the_records) {
     kit_log_set_fields(KIT_LOG_FIELD_COUNT);
 
     unsigned long long first = 0;
-    for (int i = 0; i < 3; i++) KIT_LOG(KIT_LOG_INFO, "tick");
+    for (int i = 0; i < 3; i++) KIT_INFO("tick");
     fclose(fp);
     kit_log_set_output(NULL);
     kit_log_set_level(KIT_LOG_CRITICAL);
@@ -317,6 +352,7 @@ int main(void) {
     RUN(log_level_filters_lower_levels);
     RUN(log_omits_ansi_codes_when_not_a_tty);
     RUN(log_fields_select_the_prefix);
+    RUN(log_level_macros_map_to_their_levels);
     RUN(log_field_count_numbers_the_records);
     RUN(fs_write_then_read_roundtrip);
     RUN(fs_read_reports_size_and_keeps_embedded_nuls);

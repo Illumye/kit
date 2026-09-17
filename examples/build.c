@@ -37,7 +37,7 @@ static bool collect_sources(KitFileList *sources, KitFileList *headers) {
     }
 
     if (sources->count == 0) {
-        KIT_LOG(KIT_LOG_ERROR, "no source file in %s", SRC_DIR);
+        KIT_ERROR("no source file in %s", SRC_DIR);
         ok = false;
     }
     kit_file_list_free(&entries);
@@ -63,7 +63,7 @@ static bool compile(char *source, const char *object,
 
     if (stale < 0) return false;
     if (stale == 0) {
-        KIT_LOG(KIT_LOG_DEBUG, "up to date: %s", object);
+        KIT_DEBUG("up to date: %s", object);
         return true;
     }
 
@@ -81,7 +81,7 @@ static bool link_target(const KitFileList *objects) {
     int stale = kit_fs_stale_list(TARGET, objects);
     if (stale < 0) return false;
     if (stale == 0) {
-        KIT_LOG(KIT_LOG_INFO, "%s is up to date", TARGET);
+        KIT_INFO("%s is up to date", TARGET);
         return true;
     }
 
@@ -96,7 +96,7 @@ static bool link_target(const KitFileList *objects) {
 static bool clean(void) {
     KitFileList entries = {0};
     if (!kit_fs_is_dir(BUILD_DIR)) {
-        KIT_LOG(KIT_LOG_INFO, "nothing to clean");
+        KIT_INFO("nothing to clean");
         return true;
     }
     if (!kit_fs_list(BUILD_DIR, &entries)) return false;
@@ -105,7 +105,7 @@ static bool clean(void) {
         kit_fs_remove(kit_scratch_printf("%s/%s", BUILD_DIR, entries.items[i]));
 
     kit_file_list_free(&entries);
-    KIT_LOG(KIT_LOG_INFO, "cleaned %s", BUILD_DIR);
+    KIT_INFO("cleaned %s", BUILD_DIR);
     return true;
 }
 
@@ -142,7 +142,7 @@ int main(int argc, char **argv) {
     int      status  = 1;
 
     if (!collect_sources(&sources, &headers)) goto done;
-    KIT_LOG(KIT_LOG_DEBUG, "%zu source(s), %zu header(s)", sources.count, headers.count);
+    KIT_DEBUG("%zu source(s), %zu header(s)", sources.count, headers.count);
 
     size_t compiled = 0;
     for (size_t i = 0; i < sources.count; ++i) {
@@ -152,7 +152,7 @@ int main(int argc, char **argv) {
     }
 
     if (!link_target(&objects)) goto done;
-    KIT_LOG(KIT_LOG_INFO, "%s ready (%zu file(s) compiled)", TARGET, compiled);
+    KIT_INFO("%s ready (%zu file(s) compiled)", TARGET, compiled);
 
     if (run && !kit_command_run_args(TARGET, NULL)) goto done;
     status = 0;

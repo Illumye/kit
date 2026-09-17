@@ -34,14 +34,14 @@ int main(int argc, char **argv) {
 
     /* Utilisation des valeurs parsées */
     if (verbose) {
-        KIT_LOG(KIT_LOG_INFO, "verbose   : on");
-        KIT_LOG(KIT_LOG_INFO, "dry-run   : %s", dry_run ? "on" : "off");
-        KIT_LOG(KIT_LOG_INFO, "output    : %s", output);
-        KIT_LOG(KIT_LOG_INFO, "format    : %s", format);
-        KIT_LOG(KIT_LOG_INFO, "jobs      : %d", jobs);
-        KIT_LOG(KIT_LOG_INFO, "fichiers (%d) :", argc);
+        KIT_INFO("verbose   : on");
+        KIT_INFO("dry-run   : %s", dry_run ? "on" : "off");
+        KIT_INFO("output    : %s", output);
+        KIT_INFO("format    : %s", format);
+        KIT_INFO("jobs      : %d", jobs);
+        KIT_INFO("fichiers (%d) :", argc);
         for (int i = 0; i < argc; i++)
-            KIT_LOG(KIT_LOG_INFO, "  [%d] %s", i, argv[i]);
+            KIT_INFO("  [%d] %s", i, argv[i]);
     }
 
     if (dry_run) {
