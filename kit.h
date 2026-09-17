@@ -156,6 +156,17 @@ extern "C" {
 #    define KIT_CAST_LIKE(lvalue, ptr) (ptr)
 #endif
 
+/* The alignment of a type, which is not its size: on s390x max_align_t is 24
+ * bytes wide and aligned on 8, and taking the width for the alignment made the
+ * arena abort on a value that is not a power of two. */
+#if defined(__cplusplus)
+#    define KIT_ALIGNOF(T) alignof(T)
+#elif defined(_MSC_VER)
+#    define KIT_ALIGNOF(T) __alignof(T)
+#else
+#    define KIT_ALIGNOF(T) _Alignof(T)
+#endif
+
 /* A zeroed aggregate. C spells it {0} and C++ warns about the fields that
  * leaves out; C++ spells it {} and C rejects that before C23. Library types
  * are all designed to start zeroed, so this is the portable way to say so:
@@ -730,7 +741,7 @@ typedef struct {
  * A zero-initialised KitArena behaves identically, minus the preallocation. */
 KitArena kit_arena_make(size_t size);
 
-/* Aligned on max_align_t, which suits every standard type. */
+/* Aligned for max_align_t, which suits every standard type. */
 void *kit_arena_alloc(KitArena *a, size_t size);
 
 /* For over-aligned types: SIMD vectors, cache-line padding. `align` must be a
@@ -2443,7 +2454,7 @@ void *kit_arena_alloc_aligned(KitArena *a, size_t size, size_t align) {
 }
 
 void *kit_arena_alloc(KitArena *a, size_t size) {
-    return kit_arena_alloc_aligned(a, size, sizeof(max_align_t));
+    return kit_arena_alloc_aligned(a, size, KIT_ALIGNOF(max_align_t));
 }
 
 char *kit_arena_strndup(KitArena *a, const char *s, size_t n) {
