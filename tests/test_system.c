@@ -7,6 +7,30 @@
 #include "../kit.h"
 #include "utest.h"
 
+/* The deadlock tests need a child that floods both streams. Borrowing the
+ * shell for that made them depend on what `yes`, `head` and cmd.exe do on the
+ * machine: a CI runner's shell added its own 68 bytes to stderr, and its
+ * cmd.exe produced almost nothing. This binary spawns itself instead, so the
+ * child is the same program everywhere and writes exactly what is asked. */
+#define SPEW_LINE  "padding padding padding padding padding padding padding\n"
+#define SPEW_TIMES 4000                       /* well past any pipe buffer */
+
+static const char *self_path = NULL;
+
+static int spew(void) {
+    for (int i = 0; i < SPEW_TIMES; i++) {
+        fputs("out " SPEW_LINE, stdout);
+        fputs("err " SPEW_LINE, stderr);
+    }
+    fflush(stdout);
+    fflush(stderr);
+    return 0;
+}
+
+static size_t spew_bytes(void) {
+    return (size_t)SPEW_TIMES * (strlen(SPEW_LINE) + 4);
+}
+
 /* Builds an argv the way main() receives it, minus argv[0].
  * The one cast keeps string literals const while handing kit_cli_parse the char**
  * it expects; the parser only reorders the pointers, never the characters. */
@@ -279,22 +303,19 @@ TEST(command_capture_ex_separates_the_streams) {
  * buffer leaves no doubt. */
 TEST(command_capture_ex_does_not_deadlock_on_a_full_pipe) {
     KitCommand c = {0};
-    kit_command_push_all(&c, "sh", "-c",
-               "yes 'stdout line padding padding padding' | head -c 4000000; "
-               "yes 'stderr line padding padding padding' | head -c 4000000 >&2",
-               NULL);
+    kit_command_push_all(&c, self_path, "--spew", NULL);
 
     KitBuf out = {0}, err = {0};
     KitTimer sw = kit_timer_start();
     CHECK(kit_command_capture_split(&c, &out, &err, NULL));
     double ms = kit_timer_ms(sw);
 
-    CHECK_INT(out.count, 4000000);
-    CHECK_INT(err.count, 4000000);
-    CHECK(kit_str_starts_with_cstr(KIT_STR(kit_buf_cstr(&out)), "stdout line"));
-    CHECK(kit_str_starts_with_cstr(KIT_STR(kit_buf_cstr(&err)), "stderr line"));
+    CHECK_INT(out.count, spew_bytes());
+    CHECK_INT(err.count, spew_bytes());
+    CHECK(kit_str_starts_with_cstr(KIT_STR(kit_buf_cstr(&out)), "out "));
+    CHECK(kit_str_starts_with_cstr(KIT_STR(kit_buf_cstr(&err)), "err "));
     if (!CHECK(ms < (UTEST_SANITIZED ? 30000.0 : 10000.0)))
-        printf("      8 MiB took %.0f ms\n", ms);
+        printf("      both streams took %.0f ms\n", ms);
 
     kit_buf_free(&out); kit_buf_free(&err);
     kit_command_free(&c);
@@ -376,14 +397,15 @@ TEST(command_capture_on_windows) {
  * poll-free PeekNamedPipe loop exists for. */
 TEST(command_capture_on_windows_does_not_deadlock) {
     KitCommand c = {0};
-    kit_command_push_all(&c, "cmd", "/c",
-               "for /L %i in (1,1,4000) do @(echo out padding padding padding"
-               "& echo err padding padding padding 1>&2)", NULL);
+    kit_command_push_all(&c, self_path, "--spew", NULL);
 
     KitBuf out = {0}, err = {0};
     CHECK(kit_command_capture_split(&c, &out, &err, NULL));
-    CHECK(out.count > 100000);
-    CHECK(err.count > 100000);
+    /* Text mode turns every \n into \r\n here, so the size is a floor. */
+    CHECK(out.count >= spew_bytes());
+    CHECK(err.count >= spew_bytes());
+    CHECK(kit_str_starts_with_cstr(KIT_STR(kit_buf_cstr(&out)), "out "));
+    CHECK(kit_str_starts_with_cstr(KIT_STR(kit_buf_cstr(&err)), "err "));
 
     kit_buf_free(&out); kit_buf_free(&err);
     kit_command_free(&c);
@@ -574,7 +596,11 @@ TEST(vector_helpers) {
     CHECK_DBL(kit_vec3_scale(KIT_VEC3(1, 2, 3), 3.0f).z, 9.0f, 1e-6);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    /* Re-entered as its own child by the deadlock tests. */
+    if (argc == 2 && strcmp(argv[1], "--spew") == 0) return spew();
+    self_path = argv[0];
+
     kit_log_set_level(KIT_LOG_CRITICAL);
     utest_begin("system");
     RUN(cli_parse_every_supported_form);
