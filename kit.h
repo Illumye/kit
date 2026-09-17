@@ -49,17 +49,24 @@
 #define KIT_H
 
 /* A strict -std=c11 hides clock_gettime(), dprintf() and isatty(). This asks
- * glibc and musl for their default feature set, POSIX.1-2008 plus the BSD
- * extensions, which is exactly what a -std=gnu11 build already sees.
+ * the C library for its default feature set, which is what a -std=gnu11 build
+ * already sees: POSIX.1-2008 plus the usual extensions. Each library spells
+ * that differently, hence the two macros, and neither means anything to the
+ * other.
  *
- * It is deliberately not _POSIX_C_SOURCE. That one narrows the whole
- * translation unit to strict POSIX, so the host program silently loses
- * usleep(), strcasecmp() and the like from every header it includes after
- * this one. And nothing is defined if the program already chose a feature
- * set: that choice is not the library's to override. */
+ * Deliberately not _POSIX_C_SOURCE. That one narrows the whole translation
+ * unit to strict POSIX, so the host program silently loses usleep(),
+ * strcasecmp() and the like from every header it includes after this one. And
+ * nothing is defined when the program already chose a feature set: that choice
+ * is not the library's to override. */
 #if !defined(_WIN32) && !defined(_DEFAULT_SOURCE) && !defined(_GNU_SOURCE) \
-    && !defined(_POSIX_C_SOURCE) && !defined(_XOPEN_SOURCE) && !defined(_BSD_SOURCE)
-#    define _DEFAULT_SOURCE
+    && !defined(_POSIX_C_SOURCE) && !defined(_XOPEN_SOURCE) && !defined(_BSD_SOURCE) \
+    && !defined(_DARWIN_C_SOURCE)
+#    if defined(__APPLE__)
+#        define _DARWIN_C_SOURCE
+#    else
+#        define _DEFAULT_SOURCE
+#    endif
 #endif
 
 /* mingw defaults to the msvcrt printf, which predates C99 and rejects %zu.
@@ -133,15 +140,19 @@ extern "C" {
 #endif
 
 /* Thread-local storage for the scratch arena. Define KIT_NO_THREAD_LOCAL to
- * fall back to a single shared one, for a freestanding target that has none. */
+ * fall back to a single shared one, for a freestanding target that has none.
+ *
+ * The compiler-specific spellings come first, because they have worked for
+ * twenty years, while _Thread_local reached MSVC only in recent versions even
+ * though it advertises C11 through __STDC_VERSION__. */
 #if defined(KIT_NO_THREAD_LOCAL)
 #    define KIT_THREAD_LOCAL
-#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-#    define KIT_THREAD_LOCAL _Thread_local
-#elif defined(__GNUC__) || defined(__clang__)
-#    define KIT_THREAD_LOCAL __thread
 #elif defined(_MSC_VER)
 #    define KIT_THREAD_LOCAL __declspec(thread)
+#elif defined(__GNUC__) || defined(__clang__)
+#    define KIT_THREAD_LOCAL __thread
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#    define KIT_THREAD_LOCAL _Thread_local
 #else
 #    define KIT_THREAD_LOCAL
 #endif
