@@ -4,6 +4,11 @@
  * defines LOG_INFO and friends, raylib defines DEG2RAD, and read_file, Arena,
  * Vec2 or a TODO macro are what half the C code in the wild calls its own.
  *
+ * It also includes system headers after kit.h and calls BSD extensions from
+ * them. The header once defined _POSIX_C_SOURCE, which hid usleep() from every
+ * program that included it and broke a real deploy tool's build. Coexisting
+ * means taking nothing away from the host either.
+ *
  * This only has to compile. If a kit name leaks back out, it stops compiling.
  */
 
@@ -11,6 +16,8 @@
 #include "../kit.h"
 
 #include <syslog.h>
+#include <strings.h>
+#include <unistd.h>
 
 #define TODO(msg)        ((void)(msg))
 #define PANIC(msg)       ((void)(msg))
@@ -56,6 +63,8 @@ int main(void) {
           && DEG2RAD(0) == 0 && V2(1, 2) == 3 && SV(1) == 1;
 
     path_join();
+    usleep(0);                                 /* BSD, not strict POSIX */
+    ok = ok && strcasecmp("KIT", "kit") == 0;
     kit_arena_free(&kit_arena);
     (void)v; (void)sv; (void)cmd; (void)map; (void)level;
     return ok ? 0 : 1;

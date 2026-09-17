@@ -39,18 +39,26 @@
  *
  * REQUIREMENTS:
  *   C11 or later. On POSIX systems the implementation uses clock_gettime(),
- *   dprintf() and isatty(); the header requests them via _POSIX_C_SOURCE, so
- *   it must be included before any other system header when building with a
- *   strict -std=c11 (as opposed to -std=gnu11).
+ *   dprintf() and isatty(), which a strict -std=c11 hides. The header asks
+ *   for the C library's default feature set, so it must be included before
+ *   any other system header when building that way.
  */
 
 #ifndef KIT_H
 #define KIT_H
 
-/* Requested before any system header: clock_gettime(), dprintf() and isatty()
- * are hidden behind these under a strict -std=c11. */
-#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
-#    define _POSIX_C_SOURCE 200809L
+/* A strict -std=c11 hides clock_gettime(), dprintf() and isatty(). This asks
+ * glibc and musl for their default feature set, POSIX.1-2008 plus the BSD
+ * extensions, which is exactly what a -std=gnu11 build already sees.
+ *
+ * It is deliberately not _POSIX_C_SOURCE. That one narrows the whole
+ * translation unit to strict POSIX, so the host program silently loses
+ * usleep(), strcasecmp() and the like from every header it includes after
+ * this one. And nothing is defined if the program already chose a feature
+ * set: that choice is not the library's to override. */
+#if !defined(_WIN32) && !defined(_DEFAULT_SOURCE) && !defined(_GNU_SOURCE) \
+    && !defined(_POSIX_C_SOURCE) && !defined(_XOPEN_SOURCE) && !defined(_BSD_SOURCE)
+#    define _DEFAULT_SOURCE
 #endif
 
 /* mingw defaults to the msvcrt printf, which predates C99 and rejects %zu.

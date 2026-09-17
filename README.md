@@ -151,9 +151,10 @@ Define these before including the header to change its defaults.
 | `KIT_READ_CHUNK` | Read buffer size, default 64 KiB |
 | `KIT_NO_THREAD_LOCAL` | One shared scratch arena instead of one per thread |
 
-On POSIX the header requests `_POSIX_C_SOURCE` for `clock_gettime`, `dprintf`
-and `isatty`, so include it before any other system header when building with
-a strict `-std=c11` rather than `-std=gnu11`.
+On POSIX the header requests the C library's default feature set, which a
+strict `-std=c11` hides, for `clock_gettime`, `dprintf` and `isatty`. Include it
+before any other system header when building that way. It never narrows what
+your own code sees, and leaves any feature macro you defined yourself alone.
 
 ## Status
 

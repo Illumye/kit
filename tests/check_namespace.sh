@@ -14,7 +14,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 prefixed='^(kit_|kit__|Kit|KIT_|KIT__)'
 # Feature-test macros are requests to the C library, not names of ours.
-allowed='^(_POSIX_C_SOURCE|__USE_MINGW_ANSI_STDIO|_CRT_SECURE_NO_WARNINGS|WIN32_LEAN_AND_MEAN)$'
+allowed='^(_DEFAULT_SOURCE|__USE_MINGW_ANSI_STDIO|_CRT_SECURE_NO_WARNINGS|WIN32_LEAN_AND_MEAN)$'
 status=0
 
 # --- macros ------------------------------------------------------------------
@@ -24,7 +24,7 @@ grep -E '^#\s*include\s*<' "$HEADER" \
     | grep -vE '<(windows|io)\.h>' \
     | sed 's/^#\s*include/#include/' > "$WORK/system.h"
 
-{ echo '#define _POSIX_C_SOURCE 200809L'; cat "$WORK/system.h"; } > "$WORK/base.c"
+{ echo '#define _DEFAULT_SOURCE'; cat "$WORK/system.h"; } > "$WORK/base.c"
 { echo '#define KIT_IMPLEMENTATION'; echo "#include \"$PWD/$HEADER\""; } > "$WORK/kit.c"
 
 $CC -std=c11 -dM -E "$WORK/base.c" | awk '{print $2}' | sed 's/(.*//' | sort -u > "$WORK/base.macros"
