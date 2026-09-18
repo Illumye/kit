@@ -11,7 +11,7 @@ section below; the rest of this file is the earlier audit and stands as is.
 ## Feature gaps (audit of 2026-09-18)
 
 Development is going through these in five phases, in the order below.
-Phase 1 is done.
+Phases 1 and 2 are done.
 
 ### Done since the audit
 
@@ -26,21 +26,30 @@ where they exist, a portable path elsewhere, and both are run by the suite:
 `KIT_NO_OVERFLOW_BUILTINS` forces the second one on a machine whose compiler
 would never take it.
 
+**Human-readable formatting.** `kit_fmt_size` and `kit_fmt_duration`,
+section 17, writing into a buffer the caller owns. `tree.c` carried its own
+copy of the first one, which is the argument for having it.
+
+**Hex dump.** `kit_hex_dump`, section 18, in `hexdump -C`'s layout so the two
+can be read side by side. `examples/cli.c` became `examples/peek.c` to host
+it: the one example that was a guided tour is now a tool that says what a
+file is.
+
+**Random numbers.** `kit_random_*`, section 19, xoshiro256** seeded through
+splitmix64. Reproducible from a seed on every platform, unbiased over a
+range, and a zeroed generator is the default sequence rather than an
+infinite run of zeros.
+
+**Micro-benchmark.** `kit_bench_run` and `kit_bench_report`, section 20.
+Warm-up excluded, minimum reported first. No standard deviation on purpose:
+the square root would drag in the maths library that `KIT_NO_VEC_MATH`
+exists to avoid.
+
 Not done, deliberately: the inline overflow guards in `kit_array_reserve`
 and in the integer parsers still stand on their own. Rewiring working code
 that aborts anyway would be churn for no behaviour a caller can see.
 
 ### Not started
-
-**Hex dump.** No function renders a byte buffer as offset/hex/ASCII columns
-for a log line or a debug print.
-
-**PRNG.** No pseudo-random generator. A program under `examples/` that wants
-jitter, sampling or a synthetic dataset has nothing to reach for.
-
-**Human-readable formatting.** No `kit_fmt_size` (`"3.2 MiB"`) or
-`kit_fmt_duration` (`"2m 14s"`). `journal.c` and `tree.c` would be the
-first callers.
 
 **UTF-8.** `kit__utf8_cut` only protects `KitError`'s message truncation
 from splitting a multi-byte sequence; it is internal, unexported, and does
@@ -63,10 +72,6 @@ scratch by whoever needs one.
 **Heap / priority queue.** No binary heap over an array, so a priority
 queue built on the existing dynamic-array macros needs its own sift-up and
 sift-down.
-
-**Micro-benchmark harness.** No equivalent of `kit_timer` with warm-up
-iterations and basic statistics (min, mean, standard deviation) for
-comparing two implementations.
 
 ### Partially developed
 
