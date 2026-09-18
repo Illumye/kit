@@ -17,15 +17,13 @@ typedef struct {
     int64_t newest;                 /* seconds since the epoch */
 } Totals;
 
+/* Scratch memory: freed in one go by the caller, never one string at a time,
+ * which is exactly what a printing loop wants. The formatting itself is
+ * kit_fmt_size, since every program that reports sizes writes this function
+ * once and this one is no exception. */
 static const char *human(int64_t bytes) {
-    static const char *const unit[] = { "B", "KiB", "MiB", "GiB", "TiB" };
-    double  value = (double)bytes;
-    size_t  u     = 0;
-    while (value >= 1024.0 && u + 1 < KIT_COUNTOF(unit)) { value /= 1024.0; u++; }
-    /* Scratch memory: freed in one go by the caller, never one string at a
-     * time, which is exactly what a printing loop wants. */
-    return u == 0 ? kit_scratch_printf("%lld %s", (long long)bytes, unit[u])
-                  : kit_scratch_printf("%.1f %s", value, unit[u]);
+    char text[KIT_FMT_CAPACITY];
+    return kit_scratch_strdup(kit_fmt_size(text, sizeof text, (uint64_t)bytes));
 }
 
 static bool walk(const char *path, int depth, int max_depth, Totals *totals, KitError *err) {
@@ -135,7 +133,9 @@ int main(int argc, char **argv) {
         kit_scratch_free();
         return 1;
     }
-    double elapsed = kit_timer_ms(clock);
+    /* Read before printing anything, so the figure is the walk and not the
+     * terminal it is reported to. */
+    double elapsed = kit_timer_s(clock);
 
     printf("\n%zu files, %zu directories", totals.files, totals.directories);
     if (totals.others) printf(", %zu other entries", totals.others);
@@ -153,7 +153,8 @@ int main(int argc, char **argv) {
         strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M", &parts);
         printf("most recent change %s\n", stamp);
     }
-    printf("walked in %.1f ms (%.3f s)\n", elapsed, kit_timer_s(clock));
+    char took[KIT_FMT_CAPACITY];
+    printf("walked in %s\n", kit_fmt_duration(took, sizeof took, elapsed));
 
     kit_scratch_free();
     return 0;

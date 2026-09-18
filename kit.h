@@ -39,6 +39,7 @@
  *   14. Paths        kit_path_*
  *   15. Maths        kit_clampf, kit_lerpf, kit_remapf, KIT_MIN, KIT_MAX
  *   16. Arithmetic   kit_num_add, kit_num_sub, kit_num_mul
+ *   17. Formatting   kit_fmt_size, kit_fmt_duration
  *
  * REQUIREMENTS:
  *   C11 or later. On POSIX systems the implementation uses clock_gettime(),
@@ -1555,6 +1556,36 @@ extern "C" {
 #    define kit_num_sub(a, b, out) KIT__NUM_PICK(sub, (out))((a), (b), (out))
 #    define kit_num_mul(a, b, out) KIT__NUM_PICK(mul, (out))((a), (b), (out))
 #endif
+
+/* --------------------------------------------------------------------------
+ * SECTION 17 : HUMAN-READABLE FORMATTING
+ *
+ * Counts a person reads at a glance, rather than digits they have to. Both
+ * write into a buffer the caller owns, like the path helpers, so nothing is
+ * allocated and two of them can appear in the same printf.
+ *
+ *   char size[KIT_FMT_CAPACITY], took[KIT_FMT_CAPACITY];
+ *   printf("%s in %s\n", kit_fmt_size(size, sizeof size, bytes),
+ *                        kit_fmt_duration(took, sizeof took, seconds));
+ *
+ *   -> 3.2 MiB in 2m 14s
+ *
+ * Sizes are binary: 1 KiB is 1024 bytes, which is what a filesystem counts
+ * in. Below a kibibyte the exact number of bytes is shown, since "0.4 KiB"
+ * tells a reader less than "412 B" does.
+ *
+ * Durations keep three significant figures at most, and drop to the next unit
+ * down for the remainder: "2m 14s", not "134 s" and not "2.233 minutes". A
+ * duration that is not a number, or is negative, prints as zero rather than
+ * as "nan", and one past roughly 285 million years, an infinity included,
+ * prints as that cap: these produce a label, and a label has no way to fail.
+ * -------------------------------------------------------------------------- */
+
+/* Enough for anything either one produces, terminator included. */
+#define KIT_FMT_CAPACITY 32
+
+char *kit_fmt_size(char *buf, size_t bufsz, uint64_t bytes);
+char *kit_fmt_duration(char *buf, size_t bufsz, double seconds);
 
 #ifdef __cplusplus
 }   /* extern "C" */
@@ -3891,6 +3922,78 @@ bool kit_path_is_absolute(const char *path) {
 #else
     return path[0] == '/';
 #endif
+}
+
+/* --------------------------------------------------------------------------
+ * Human-readable formatting
+ * -------------------------------------------------------------------------- */
+
+char *kit_fmt_size(char *buf, size_t bufsz, uint64_t bytes) {
+    static const char *const unit[] = { "B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB" };
+    if (bufsz == 0) return buf;
+
+    if (bytes < 1024u) {
+        snprintf(buf, bufsz, "%llu B", (unsigned long long)bytes);
+        return buf;
+    }
+
+    double value = (double)bytes;
+    size_t u     = 0;
+    while (value >= 1024.0 && u + 1 < KIT_COUNTOF(unit)) {
+        value /= 1024.0;
+        u++;
+    }
+
+    /* One decimal place rounds 1023.97 KiB up to "1024.0 KiB", a quantity
+     * that has a name of its own. */
+    if (value >= 1023.95 && u + 1 < KIT_COUNTOF(unit)) {
+        value /= 1024.0;
+        u++;
+    }
+
+    snprintf(buf, bufsz, "%.1f %s", value, unit[u]);
+    return buf;
+}
+
+char *kit_fmt_duration(char *buf, size_t bufsz, double seconds) {
+    if (bufsz == 0) return buf;
+
+    /* Written so that a NaN takes this branch: every comparison against one
+     * is false, and printing "nan s" where a duration belongs helps nobody. */
+    if (!(seconds > 0.0)) {
+        snprintf(buf, bufsz, "0 ms");
+        return buf;
+    }
+
+    /* Each threshold is the value the next unit's rounding would turn into a
+     * full one of the unit above: left at 60, "59.999 s" prints as "60.00 s",
+     * a quantity that already has a name. */
+    if (seconds < 0.001) {
+        snprintf(buf, bufsz, "%.2f ms", seconds * 1000.0);
+        return buf;
+    }
+    if (seconds < 0.9995) {
+        snprintf(buf, bufsz, "%.0f ms", seconds * 1000.0);
+        return buf;
+    }
+    if (seconds < 59.995) {
+        snprintf(buf, bufsz, "%.2f s", seconds);
+        return buf;
+    }
+
+    /* Whole seconds from here on, so the units divide exactly instead of
+     * each one rounding again. The cap is past any duration a program can
+     * have measured, and keeps the conversion inside long long. */
+    if (seconds > 9.0e15) seconds = 9.0e15;
+    long long total = (long long)(seconds + 0.5);
+
+    if (total < 3600)
+        snprintf(buf, bufsz, "%lldm %02llds", total / 60, total % 60);
+    else if (total < 86400)
+        snprintf(buf, bufsz, "%lldh %02lldm", total / 3600, (total % 3600) / 60);
+    else
+        snprintf(buf, bufsz, "%lldd %02lldh", total / 86400, (total % 86400) / 3600);
+    return buf;
 }
 
 #endif /* KIT_IMPLEMENTATION && !KIT__IMPLEMENTATION_DONE */

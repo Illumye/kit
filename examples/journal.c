@@ -184,7 +184,9 @@ int main(int argc, char **argv) {
     printf("%d lines written, %zu file(s) kept:\n", lines, files.count);
     for (size_t i = 0; i < files.count; ++i) {
         const char *path = kit_scratch_printf("%s%c%s", directory, KIT_PATH_SEP, files.items[i]);
-        printf("  %-14s %8lld bytes\n", files.items[i], (long long)kit_fs_size(path, NULL));
+        char size[KIT_FMT_CAPACITY];
+        printf("  %-14s %10s\n", files.items[i],
+               kit_fmt_size(size, sizeof size, (uint64_t)kit_fs_size(path, NULL)));
     }
 
     /* Room before the next rotation, counted in bytes, which is a size and so
@@ -194,8 +196,10 @@ int main(int argc, char **argv) {
     int64_t written = kit_fs_size(path_of(&journal, 0), NULL);
     if (written >= 0) {
         uint64_t room = 0;
+        char left[KIT_FMT_CAPACITY];
         if (kit_num_sub((uint64_t)journal.limit, (uint64_t)written, &room))
-            printf("  %llu bytes before the next rotation\n", (unsigned long long)room);
+            printf("  %s before the next rotation\n",
+                   kit_fmt_size(left, sizeof left, room));
         else
             printf("  past the limit already: the next line rotates\n");
     }
