@@ -165,8 +165,11 @@ check-examples: $(EXAMPLE_BIN)
 	@./examples/wordfreq --top 3 examples/demo/prose.txt | grep -q 'most common: errors'
 	@./examples/wordfreq --bench 5 --top 1 examples/demo/prose.txt | grep -q 'counting.*5 samples'
 	@./examples/tree --depth 2 examples/demo | grep -q 'app.conf'
+	@./examples/tree --depth 2 --largest 2 examples/demo | grep -q 'largest 2'
 	@./examples/orbit --bodies 3 --steps 50 | grep -q 'spin axis'
 	@./examples/runner -- echo hello | grep -q '^hello$$'
+	@./examples/runner -- sh -c 'for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo line $$i; done; exit 7' 2>&1 \
+	   | grep -q '2 earlier line'
 	@./examples/runner --check no-such-program 2>&1 | grep -q 'missing'
 	@rm -rf build/journal
 	@./examples/journal --dir build/journal --limit 700 --lines 20 --quiet 2>&1 \

@@ -11,11 +11,50 @@
 #define KIT_IMPLEMENTATION
 #include "../kit.h"
 
+/* A file worth remembering. The path has to be copied: the listing it came
+ * from is freed when the walk leaves the directory, and the scratch memory
+ * the child path was built in is rewound at the end of every entry. */
+typedef struct {
+    const char *path;
+    int64_t     size;
+} Found;
+
+typedef struct { Found *items; size_t count, capacity; } Biggest;
+
 typedef struct {
     size_t files, directories, others;
     int64_t bytes;
     int64_t newest;                 /* seconds since the epoch */
+    Biggest   biggest;              /* a heap of the largest seen so far */
+    size_t    want;                 /* how many of them to keep */
+    KitArena *names;                /* where the kept paths live */
 } Totals;
+
+/* Smallest first, so that the one to drop when something bigger arrives is
+ * the one the heap offers. */
+static int by_size(const void *a, const void *b) {
+    const Found *x = (const Found *)a, *y = (const Found *)b;
+    return x->size < y->size ? -1 : x->size > y->size ? 1 : 0;
+}
+
+static int by_size_desc(const void *a, const void *b) {
+    return -by_size(a, b);
+}
+
+/* The N largest of a tree, without sorting the tree. The heap holds N
+ * entries: anything smaller than its smallest cannot belong in the answer and
+ * is forgotten as soon as it is seen. */
+static void remember_if_big(Totals *totals, const char *path, int64_t size) {
+    if (totals->want == 0) return;
+
+    if (totals->biggest.count == totals->want) {
+        if (size <= totals->biggest.items[0].size) return;
+        kit_heap_pop(&totals->biggest, by_size);
+    }
+
+    Found found = { kit_arena_strdup(totals->names, path), size };
+    kit_heap_push(&totals->biggest, found, by_size);
+}
 
 /* Scratch memory: freed in one go by the caller, never one string at a time,
  * which is exactly what a printing loop wants. The formatting itself is
@@ -73,6 +112,7 @@ static bool walk(const char *path, int depth, int max_depth, Totals *totals, Kit
                 break;
             }
             if (when > totals->newest) totals->newest = when;
+            remember_if_big(totals, child, size);
 
             const char *ext = kit_path_ext(name);
             printf("%*s%-28s %10s%s%s\n", depth * 2, "", name, human(size),
@@ -102,11 +142,12 @@ static bool walk(const char *path, int depth, int max_depth, Totals *totals, Kit
 int main(int argc, char **argv) {
     const char *prog = kit_cli_shift(&argc, &argv);
 
-    int  depth = 2;
+    int  depth = 2, largest = 3;
     bool help  = false;
     KitCliOpt opts[] = {
-        KIT_CLI_INT ('d', "depth", "N", "How deep to go", &depth),
-        KIT_CLI_FLAG('h', "help",  "Show this help",      &help),
+        KIT_CLI_INT ('d', "depth",   "N", "How deep to go",           &depth),
+        KIT_CLI_INT ('l', "largest", "N", "How many big files to name", &largest),
+        KIT_CLI_FLAG('h', "help",    "Show this help",                &help),
     };
     if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) return 1;
     if (help) { kit_cli_usage_arr(stdout, prog, opts); return 0; }
@@ -123,13 +164,22 @@ int main(int argc, char **argv) {
            kit_path_is_absolute(root) ? "  (absolute)" : "",
            kit_path_dirname(root, parent, sizeof(parent)));
 
+    /* The names of the files worth keeping outlive the walk that found them,
+     * so they go in an arena of their own rather than in the scratch memory
+     * the walk rewinds after every entry. */
+    KitArena names  = KIT_ZEROED;
     Totals   totals = KIT_ZEROED;
-    KitError err    = KIT_ZEROED;
-    KitTimer clock  = kit_timer_start();
+    totals.want     = (size_t)(largest < 0 ? 0 : largest);
+    totals.names    = &names;
+
+    KitError err   = KIT_ZEROED;
+    KitTimer clock = kit_timer_start();
 
     if (!walk(root, 1, depth < 1 ? 1 : depth, &totals, &err)) {
         kit_error_context(&err, "walking %s", root);
         KIT_ERROR("%s", err.message);
+        kit_array_free(&totals.biggest);
+        kit_arena_free(&names);
         kit_scratch_free();
         return 1;
     }
@@ -153,9 +203,22 @@ int main(int argc, char **argv) {
         strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M", &parts);
         printf("most recent change %s\n", stamp);
     }
+    /* The heap answered "which are the biggest", which is not the same
+     * question as "in what order": only its first element was ever ordered,
+     * so the few that came out of it are sorted now, at the end, on the
+     * handful that survived rather than on everything walked. */
+    if (totals.biggest.count > 0) {
+        kit_array_sort(&totals.biggest, by_size_desc);
+        printf("largest %zu:\n", totals.biggest.count);
+        kit_array_each(Found, found, &totals.biggest)
+            printf("  %-32s %10s\n", found->path, human(found->size));
+    }
+
     char took[KIT_FMT_CAPACITY];
     printf("walked in %s\n", kit_fmt_duration(took, sizeof took, elapsed));
 
+    kit_array_free(&totals.biggest);
+    kit_arena_free(&names);
     kit_scratch_free();
     return 0;
 }

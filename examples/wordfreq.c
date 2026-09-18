@@ -169,8 +169,7 @@ int main(int argc, char **argv) {
         Entry entry = { e->key, *(const size_t *)e->value };
         kit_array_push(&ranked, entry);
     }
-    if (ranked.count > 1)
-        qsort(ranked.items, ranked.count, sizeof(*ranked.items), by_count_then_word);
+    kit_array_sort(&ranked, by_count_then_word);
 
     /* One buffer for the whole report, printed once. */
     KitBuf out = KIT_ZEROED;

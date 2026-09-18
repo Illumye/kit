@@ -348,6 +348,45 @@ TEST(array_reserve_is_idempotent) {
     kit_array_free(&a);
 }
 
+static int by_value(const void *a, const void *b) {
+    int x = *(const int *)a, y = *(const int *)b;
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+TEST(array_sort_orders_in_place) {
+    IntArray a = {0};
+    int      input[] = { 5, 3, 9, 1, 3, 7 };
+    kit_array_push_many(&a, input, KIT_COUNTOF(input));
+
+    kit_array_sort(&a, by_value);
+
+    CHECK_INT(a.count, KIT_COUNTOF(input));
+    bool ordered = true;
+    for (size_t i = 1; i < a.count; i++)
+        if (a.items[i - 1] > a.items[i]) ordered = false;
+    CHECK(ordered);
+    CHECK_INT(kit_array_first(&a), 1);
+    CHECK_INT(kit_array_last(&a), 9);
+
+    kit_array_free(&a);
+}
+
+/* An empty array has no items pointer at all, and qsort must not be handed
+ * one: the count being zero is not enough to make a null base legal. */
+TEST(array_sort_leaves_a_short_array_alone) {
+    IntArray empty = {0};
+    kit_array_sort(&empty, by_value);
+    CHECK_INT(empty.count, 0);
+    CHECK(empty.items == NULL);
+
+    IntArray one = {0};
+    kit_array_push(&one, 42);
+    kit_array_sort(&one, by_value);
+    CHECK_INT(one.count, 1);
+    CHECK_INT(one.items[0], 42);
+    kit_array_free(&one);
+}
+
 int main(void) {
     kit_log_set_level(KIT_LOG_CRITICAL);
     utest_begin("files");
@@ -367,5 +406,7 @@ int main(void) {
     RUN(array_append_and_iterate);
     RUN(array_append_many_and_remove);
     RUN(array_reserve_is_idempotent);
+    RUN(array_sort_orders_in_place);
+    RUN(array_sort_leaves_a_short_array_alone);
     return utest_report();
 }

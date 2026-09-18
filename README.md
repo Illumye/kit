@@ -37,7 +37,7 @@ new one.
 | Assertions | `KIT_ASSERT` | Contracts that abort and print both sides, typed |
 | Errors | `kit_error`, `KitError` | Failures with a category, a native code and a context chain |
 | Filesystem | `kit_fs` | Streamed reads, recursive mkdir, sorted listing, staleness checks |
-| Arrays | `kit_array` | Growable arrays over any `{items, count, capacity}` struct |
+| Arrays | `kit_array` | Growable arrays over any `{items, count, capacity}` struct, sorting included |
 | Strings | `kit_str` | Non-owning slices: search, splitting, strict numeric parsing |
 | Arena | `kit_arena`, `kit_scratch` | Bump allocation over chained regions, and per-thread scratch |
 | Timer | `kit_timer` | Monotonic timing |
@@ -52,6 +52,8 @@ new one.
 | Hex dump | `kit_hex_dump` | Bytes and their text, laid out like `hexdump -C` |
 | Random | `kit_random`, `KitRandom` | Reproducible xoshiro256**, with an unbiased range |
 | Benchmark | `kit_bench`, `KitBench` | Repeated timing of a body, warm-up excluded |
+| Ring buffer | `kit_ring` | The last N of something, in a fixed amount of memory |
+| Heap | `kit_heap` | A priority queue over a dynamic array |
 
 Each module is documented where it is declared. Read the header.
 
@@ -173,7 +175,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 152 tests over twelve files, and the header compiles warning-free
+The suite is 168 tests over fourteen files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 
@@ -190,8 +192,8 @@ the build stops.
 | `config.c` | Reads an INI file into a map | strings, map, arena, errors with context |
 | `journal.c` | Rotates a log file when it grows | filesystem writes, logger configuration, error codes |
 | `orbit.c` | Steps a few bodies around a centre | vectors, scalar maths, arena, timer |
-| `runner.c` | Reports on other programs and runs them | commands, processes, captured output |
-| `tree.c` | Walks a directory and measures it | filesystem, paths, scratch, timer |
+| `runner.c` | Reports on other programs and runs them | commands, processes, captured output, ring buffer |
+| `tree.c` | Walks a directory, measures it, names its biggest files | filesystem, paths, scratch, heap |
 | `wordfreq.c` | Counts words in a text | string views, map, arrays, buffers, hashing |
 | `peek.c` | Says what a file is and shows its bytes | option parsing, file kinds, readable sizes, hex dump |
 
@@ -200,7 +202,7 @@ make examples
 ./examples/config examples/demo/app.conf --list
 ./examples/peek -n 32 examples/demo/app.conf
 ./examples/wordfreq --top 5 --bench 100 examples/demo/prose.txt
-./examples/tree --depth 2 examples
+./examples/tree --depth 2 --largest 5 examples
 ./examples/runner --check cc make git
 ./examples/orbit --bodies 5 --steps 500
 ./examples/journal --dir build/journal --limit 2048 --lines 200

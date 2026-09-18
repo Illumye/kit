@@ -47,6 +47,27 @@ static void probe(const char *program) {
     kit_command_free(&cmd);
 }
 
+/* The end of what a child wrote. A failing compiler prints screens of output
+ * and the useful part is at the bottom, so the report keeps a fixed number of
+ * lines and lets the earlier ones fall off the front. The entries are views
+ * into the captured buffer, so keeping them costs nothing. */
+typedef struct {
+    KitStr items[10];
+    size_t capacity, head, count;
+} Tail;
+
+/* Drains the ring: the report is printed once and the lines are consumed as
+ * they go, oldest first, which is the order they were written in. */
+static void report_tail(Tail *tail, size_t total_lines) {
+    if (tail->count < total_lines)
+        printf("  ... %zu earlier line(s)\n", total_lines - tail->count);
+
+    while (tail->count > 0) {
+        KitStr line = kit_ring_pop(tail);
+        printf("  " KIT_STR_FMT "\n", KIT_STR_ARG(line));
+    }
+}
+
 /* Two children at once, each waited for separately: what kit_command_spawn is
  * for, and the reason KitProcess exists at all. */
 static bool in_parallel(const char *program, KitError *err) {
@@ -126,10 +147,24 @@ int main(int argc, char **argv) {
     bool     ok  = merged ? kit_command_capture_merged(&cmd, &out, &err)
                           : kit_command_capture(&cmd, &out, &err);
 
-    fputs(kit_buf_cstr(&out), stdout);
     if (!ok) {
+        /* A failure is where the tail earns its place: the whole output goes
+         * nowhere, only its end is shown, and the count says what was cut. */
+        Tail   tail  = KIT_ZEROED;
+        size_t lines = 0;
+        kit_ring_init(&tail);
+
+        KitStr rest = kit_str_from_parts(out.items, out.count), line;
+        while (kit_str_next(&rest, '\n', &line)) {
+            kit_ring_push(&tail, line);
+            lines++;
+        }
+
         kit_error_context(&err, "running %s", argv[0]);
         KIT_ERROR("%s (%s)", err.message, kit_error_code_name(err.code));
+        report_tail(&tail, lines);
+    } else {
+        fputs(kit_buf_cstr(&out), stdout);
     }
 
     /* A KitCommand can be emptied and filled again rather than freed. */

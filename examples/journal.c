@@ -19,6 +19,13 @@ typedef struct {
     int         keep;         /* how many old files to keep */
 } Journal;
 
+/* The identifiers of the last few lines written, in a window that never
+ * grows: older ones fall off the front as new ones arrive. */
+typedef struct {
+    uint64_t items[6];
+    size_t   capacity, head, count;
+} Recent;
+
 static char *path_of(const Journal *j, int index) {
     /* kit_path_join puts the separator in, whatever it is on this platform. */
     char *buffer = (char *)kit_scratch_alloc(512);
@@ -168,10 +175,18 @@ int main(int argc, char **argv) {
      * so that two runs of this program do not produce the same ones. */
     KitRandom rng = kit_random_seed((uint64_t)time(NULL));
 
+    /* The most recent identifiers, kept in a fixed window: what a log tool
+     * shows when asked what just happened, without holding the whole run. */
+    Recent recent = KIT_ZEROED;
+    kit_ring_init(&recent);
+
     for (int i = 0; i < lines; i++) {
+        uint64_t request = kit_random_u64(&rng);
+        kit_ring_push(&recent, request);
+
         const char *line = kit_scratch_printf(
             "%04d  req=%016llx  the quick brown fox jumps over the lazy dog",
-            i, (unsigned long long)kit_random_u64(&rng));
+            i, (unsigned long long)request);
         if (!append_line(&journal, line, &err)) {
             kit_error_context(&err, "writing the journal in %s", directory);
             KIT_ERROR("%s (%s)", err.message, kit_error_code_name(err.code));
@@ -190,6 +205,12 @@ int main(int argc, char **argv) {
     }
 
     printf("%d lines written, %zu file(s) kept:\n", lines, files.count);
+    if (recent.count > 0) {
+        printf("  the last %zu request(s):", recent.count);
+        kit_ring_each(&recent, i)
+            printf(" %04llx", (unsigned long long)(kit_ring_at(&recent, i) & 0xffffu));
+        printf("\n");
+    }
     for (size_t i = 0; i < files.count; ++i) {
         const char *path = kit_scratch_printf("%s%c%s", directory, KIT_PATH_SEP, files.items[i]);
         char size[KIT_FMT_CAPACITY];

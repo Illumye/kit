@@ -43,6 +43,8 @@
  *   18. Hex dump     kit_hex_dump
  *   19. Random       kit_random_*, KitRandom
  *   20. Benchmark    kit_bench_run, kit_bench_report
+ *   21. Ring buffer  kit_ring_*
+ *   22. Heap         kit_heap_push, kit_heap_pop
  *
  * REQUIREMENTS:
  *   C11 or later. On POSIX systems the implementation uses clock_gettime(),
@@ -814,6 +816,25 @@ static inline int kit_fs_stale1(const char *output, const char *input, KitError 
         _found;                                                     \
     })
 #endif
+
+/* Sort in place with a qsort comparator: it receives pointers to two
+ * elements and answers which comes first, exactly as qsort's does.
+ *
+ *   static int by_count(const void *a, const void *b) {
+ *       const Entry *x = (const Entry *)a, *y = (const Entry *)b;
+ *       return x->count < y->count ? 1 : x->count > y->count ? -1 : 0;
+ *   }
+ *   kit_array_sort(&entries, by_count);
+ *
+ * The element size and the count come from the array itself, which is the
+ * part a hand-written qsort call gets wrong. Not a stable sort: qsort makes
+ * no such promise, so elements that compare equal can come out in any order,
+ * and a comparator that ends on a tiebreaker is how that stops mattering. */
+#define kit_array_sort(da, compare)                                        \
+    do {                                                                   \
+        if ((da)->items != NULL && (da)->count > 1)                        \
+            qsort((da)->items, (da)->count, sizeof(*(da)->items), (compare)); \
+    } while (0)
 
 /* Free and zero the array. */
 #define kit_array_free(da)     \
@@ -1694,6 +1715,144 @@ KitBench kit_bench_run(const char *name, size_t samples,
                        void (*body)(void *), void *context);
 
 void kit_bench_report(FILE *out, const KitBench *result);
+
+/* --------------------------------------------------------------------------
+ * SECTION 21 : RING BUFFER
+ *
+ * The last N of something, kept in a fixed amount of memory: the tail of a
+ * command's output, the recent requests, the samples a moving average is
+ * taken over. Pushing into a full ring overwrites the oldest entry, which is
+ * the whole point rather than a failure.
+ *
+ * Like the arrays, it works on a struct of your own. Any struct with:
+ *
+ *   T      *items;     or T items[N];
+ *   size_t  capacity;
+ *   size_t  head;      the oldest entry
+ *   size_t  count;
+ *
+ * Usage:
+ *   typedef struct { KitStr items[16]; size_t capacity, head, count; } Tail;
+ *
+ *   Tail tail = KIT_ZEROED;
+ *   kit_ring_init(&tail);                   // capacity from the array itself
+ *   kit_ring_push(&tail, line);             // the seventeenth drops the first
+ *   kit_ring_each(&tail, i)                 // oldest first
+ *       print(kit_ring_at(&tail, i));
+ *
+ * Storage the caller allocated works the same way, with capacity set by hand
+ * instead of by kit_ring_init.
+ *
+ * Nothing here allocates or frees: the memory is the one in the struct, and
+ * the arithmetic is one modulo. A ring that must not drop anything is not a
+ * ring, it is a queue that grows, which is what the kit_array_* macros are.
+ * -------------------------------------------------------------------------- */
+
+/* Empty, with the capacity taken from the storage. Only for a ring whose
+ * items are an array member; with a pointer, set capacity yourself. */
+#define kit_ring_init(r)                          \
+    do {                                          \
+        (r)->head     = 0;                        \
+        (r)->count    = 0;                        \
+        (r)->capacity = KIT_COUNTOF((r)->items);  \
+    } while (0)
+
+/* Append. Once full, the oldest entry is the one that makes room: a caller
+ * that needs to know compares count with capacity before pushing. */
+#define kit_ring_push(r, value)                                                \
+    do {                                                                       \
+        if ((r)->capacity == 0) KIT_PANIC("kit_ring_push: capacity is zero");  \
+        (r)->items[((r)->head + (r)->count) % (r)->capacity] = (value);        \
+        if ((r)->count == (r)->capacity)                                       \
+            (r)->head = ((r)->head + 1) % (r)->capacity;                       \
+        else                                                                   \
+            (r)->count++;                                                      \
+    } while (0)
+
+/* Entry i counting from the oldest, so 0 is the next one to leave. */
+#define kit_ring_at(r, i) ((r)->items[((r)->head + (i)) % (r)->capacity])
+
+/* Take the oldest entry out, as an expression. Empty is a programming error,
+ * as it is for kit_array_pop, and aborts rather than inventing a value. */
+#define kit_ring_pop(r)                                                        \
+    ((r)->count > 0                                                            \
+         ? ((r)->count--,                                                      \
+            (r)->items[kit__ring_take(&(r)->head, (r)->capacity)])             \
+         : (KIT_PANIC("kit_ring_pop on an empty ring"), (r)->items[0]))
+
+/* Walk from oldest to newest. The index is yours to name, which is what
+ * keeps two nested loops from shadowing each other:
+ *
+ *   kit_ring_each(&tail, i) { ... kit_ring_at(&tail, i) ... }
+ */
+#define kit_ring_each(r, i) \
+    for (size_t i = 0; i < (r)->count; ++i)
+
+/* Returns the current head and moves it on, which kit_ring_pop needs as one
+ * expression: reading the slot and advancing cannot be written in the order
+ * an expression evaluates them. */
+static inline size_t kit__ring_take(size_t *head, size_t capacity) {
+    size_t oldest = *head;
+    *head = capacity ? (oldest + 1) % capacity : 0;
+    return oldest;
+}
+
+/* --------------------------------------------------------------------------
+ * SECTION 22 : HEAP
+ *
+ * A priority queue over a dynamic array: whichever element a sort would put
+ * first is the one that comes out first, and getting it costs a walk down the
+ * tree rather than a sort of everything else.
+ *
+ * It works on the same struct the kit_array_* macros do, and uses them: the
+ * growth is theirs, the ordering is this section's.
+ *
+ *   typedef struct { Task *items; size_t count, capacity; } Queue;
+ *
+ *   Queue q = KIT_ZEROED;
+ *   kit_heap_push(&q, task, by_deadline);
+ *   Task next = kit_heap_pop(&q, by_deadline);
+ *
+ * The comparator is qsort's, so the same one sorts an array and orders a
+ * heap: earliest deadline first with an ascending comparator, and largest
+ * first with a descending one. The same comparator has to be passed to every
+ * call on a given heap, since it is the only thing that defines the order.
+ *
+ * The next element to come out is items[0], which is how a caller looks at it
+ * without taking it. That is what makes the classic "keep the N largest"
+ * possible in one pass over anything: hold a heap of N ordered the other way
+ * round, and replace its smallest whenever something bigger turns up.
+ *
+ * Only items[0] is ordered. The rest satisfies the heap property, which is
+ * weaker than being sorted: walk the array expecting an order and it will
+ * look almost right, which is worse than looking wrong. Sort it when it is
+ * time to present it.
+ * -------------------------------------------------------------------------- */
+
+/* Appends, then walks it up to where the order puts it. */
+#define kit_heap_push(da, item, compare)                                  \
+    do {                                                                  \
+        kit_array_push((da), (item));                                     \
+        kit__heap_sift_up((da)->items, (da)->count,                       \
+                          sizeof(*(da)->items), (compare));               \
+    } while (0)
+
+/* Takes the first element out, as an expression. An empty heap aborts, as an
+ * empty array does: asking a queue with nothing in it for its next piece of
+ * work is a mistake in the caller, not an answer this can give.
+ *
+ * The element is moved to the end of the array and taken from there with
+ * kit_array_pop, so the array's own bookkeeping stays the only bookkeeping. */
+#define kit_heap_pop(da, compare)                                         \
+    (kit__heap_take((da)->items, (da)->count,                             \
+                    sizeof(*(da)->items), (compare)),                     \
+     kit_array_pop(da))
+
+void kit__heap_sift_up(void *items, size_t count, size_t width,
+                       int (*compare)(const void *, const void *));
+
+void kit__heap_take(void *items, size_t count, size_t width,
+                    int (*compare)(const void *, const void *));
 
 #ifdef __cplusplus
 }   /* extern "C" */
@@ -4274,6 +4433,71 @@ void kit_bench_report(FILE *out, const KitBench *result) {
             result->max_ms,
             kit_fmt_duration(total, sizeof total, result->total_ms / 1000.0));
     kit__stream_unlock(out);
+}
+
+/* --------------------------------------------------------------------------
+ * Heap
+ * -------------------------------------------------------------------------- */
+
+/* Element i of an array of width-sized elements, as bytes: the same
+ * arithmetic qsort does, and the reason neither needs to know the type. */
+#define KIT__HEAP_AT(items, i, width) \
+    ((void *)((unsigned char *)(items) + (i) * (width)))
+
+static void kit__heap_swap(void *a, void *b, size_t width) {
+    unsigned char *x = (unsigned char *)a;
+    unsigned char *y = (unsigned char *)b;
+    for (size_t i = 0; i < width; i++) {
+        unsigned char keep = x[i];
+        x[i] = y[i];
+        y[i] = keep;
+    }
+}
+
+void kit__heap_sift_up(void *items, size_t count, size_t width,
+                       int (*compare)(const void *, const void *)) {
+    if (!items || count < 2) return;
+
+    size_t child = count - 1;
+    while (child > 0) {
+        size_t parent = (child - 1) / 2;
+        if (compare(KIT__HEAP_AT(items, parent, width),
+                    KIT__HEAP_AT(items, child, width)) <= 0) break;
+        kit__heap_swap(KIT__HEAP_AT(items, parent, width),
+                       KIT__HEAP_AT(items, child, width), width);
+        child = parent;
+    }
+}
+
+/* Moves the first element to the end, where kit_array_pop will take it, and
+ * settles the rest back into a heap. */
+void kit__heap_take(void *items, size_t count, size_t width,
+                    int (*compare)(const void *, const void *)) {
+    if (!items || count < 2) return;
+
+    size_t last = count - 1;
+    kit__heap_swap(KIT__HEAP_AT(items, 0, width),
+                   KIT__HEAP_AT(items, last, width), width);
+
+    /* Down from the root, over everything but the element just set aside. */
+    size_t parent = 0;
+    for (;;) {
+        size_t left  = parent * 2 + 1;
+        size_t right = left + 1;
+        size_t first = parent;
+
+        if (left < last && compare(KIT__HEAP_AT(items, left, width),
+                                   KIT__HEAP_AT(items, first, width)) < 0)
+            first = left;
+        if (right < last && compare(KIT__HEAP_AT(items, right, width),
+                                    KIT__HEAP_AT(items, first, width)) < 0)
+            first = right;
+        if (first == parent) break;
+
+        kit__heap_swap(KIT__HEAP_AT(items, first, width),
+                       KIT__HEAP_AT(items, parent, width), width);
+        parent = first;
+    }
 }
 
 #endif /* KIT_IMPLEMENTATION && !KIT__IMPLEMENTATION_DONE */
