@@ -4,6 +4,91 @@ Findings from the audit of 2026-09-12 that were deliberately left alone, and
 the work still queued. Everything listed here is a conscious choice, not an
 oversight: the defects found during that audit are fixed and covered by tests.
 
+A second audit on 2026-09-18 went over every section against the roadmap and
+listed what is still missing or only half built. That is the "Feature gaps"
+section below; the rest of this file is the earlier audit and stands as is.
+
+## Feature gaps (audit of 2026-09-18)
+
+Development is going through these in five phases, in the order below.
+Phase 1 is done.
+
+### Done since the audit
+
+**Typed assertions.** `KIT_ASSERT`, `KIT_ASSERT_MSG`, `KIT_ASSERT_CMP` and
+`KIT_ASSERT_STR_EQ`, section 1b. Never compiled out, and the comparison
+prints both sides through a `_Generic` that maps sixteen types onto six
+renderers, with an overload set standing in for it in C++.
+
+**Checked arithmetic.** `kit_num_add`, `kit_num_sub` and `kit_num_mul`,
+section 16, dispatching on the destination. The compiler's overflow builtins
+where they exist, a portable path elsewhere, and both are run by the suite:
+`KIT_NO_OVERFLOW_BUILTINS` forces the second one on a machine whose compiler
+would never take it.
+
+Not done, deliberately: the inline overflow guards in `kit_array_reserve`
+and in the integer parsers still stand on their own. Rewiring working code
+that aborts anyway would be churn for no behaviour a caller can see.
+
+### Not started
+
+**Hex dump.** No function renders a byte buffer as offset/hex/ASCII columns
+for a log line or a debug print.
+
+**PRNG.** No pseudo-random generator. A program under `examples/` that wants
+jitter, sampling or a synthetic dataset has nothing to reach for.
+
+**Human-readable formatting.** No `kit_fmt_size` (`"3.2 MiB"`) or
+`kit_fmt_duration` (`"2m 14s"`). `journal.c` and `tree.c` would be the
+first callers.
+
+**UTF-8.** `kit__utf8_cut` only protects `KitError`'s message truncation
+from splitting a multi-byte sequence; it is internal, unexported, and does
+nothing else. The string module is explicitly ASCII-only, by design
+(`kit_str_eq_nocase`'s doc comment says so), and nothing decodes, encodes,
+validates or iterates codepoints.
+
+**Glob matching.** `kit_fs_list` lists a directory's entries but nothing
+filters them against a pattern such as `*.c` or `test_*.o`.
+
+**Checksums.** `kit_hash_str`/`kit_hash_bytes` are djb2, fast and meant for
+in-memory table keys, not integrity checks. There is no CRC32 and no
+SHA-256, so nothing in the header can verify a download or a file's
+identity.
+
+**Circular buffer.** No ring buffer type, so a bounded log, a
+producer/consumer queue or a windowed average has to be written from
+scratch by whoever needs one.
+
+**Heap / priority queue.** No binary heap over an array, so a priority
+queue built on the existing dynamic-array macros needs its own sift-up and
+sift-down.
+
+**Micro-benchmark harness.** No equivalent of `kit_timer` with warm-up
+iterations and basic statistics (min, mean, standard deviation) for
+comparing two implementations.
+
+### Partially developed
+
+**Arrays have no sort.** `kit_array_push`, `_pop`, `_find`, `_contains` and
+`_each` cover growth, removal and linear search, but there is no
+`kit_array_sort`. `qsort` is already linked in and used internally by
+`kit_fs_list`; only the wrapper that infers the comparator and element size
+is missing.
+
+**Maths is geometry and interpolation only.** `kit_clampf`/`_d`/`_i`,
+`kit_lerpf` and `kit_remapf` cover the vector-maths use case the section
+grew from. Checked arithmetic now sits beside it as its own section, but
+there is still no general numeric toolbox: no min/max beyond two values,
+nothing for fixed-point or rational values.
+
+### Already covered, despite looking missing at first glance
+
+**A test framework exists.** `tests/utest.h` is the "integrated test
+framework" item from the roadmap. It stays a second header rather than a
+section of `kit.h` on purpose: test assertions are dead weight in a binary
+that ships, so a library meant to be copied whole should not carry them.
+
 ## Accepted by design
 
 **Single header, no modules.** `kit.h` is past 3400 lines and will keep
