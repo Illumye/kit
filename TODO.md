@@ -5,15 +5,18 @@ the work still queued. Everything listed here is a conscious choice, not an
 oversight: the defects found during that audit are fixed and covered by tests.
 
 A second audit on 2026-09-18 went over every section against the roadmap and
-listed what is still missing or only half built. That is the "Feature gaps"
-section below; the rest of this file is the earlier audit and stands as is.
+listed what was missing or only half built: eleven features that did not
+exist and two that stopped half way. That work is done, and the section below
+is what it turned into, kept as the record of why each thing looks the way it
+does. The rest of this file is the earlier audit and stands as is.
 
-## Feature gaps (audit of 2026-09-18)
+## The audit of 2026-09-18, and what came of it
 
-Development is going through these in five phases, in the order below.
-Phases 1 to 4 are done.
+The five phases this was broken into are all done. What is left below is the
+one entry that was only ever half a gap, and the note about the item that
+turned out to exist already.
 
-### Done since the audit
+### Filled since the audit
 
 **Typed assertions.** `KIT_ASSERT`, `KIT_ASSERT_MSG`, `KIT_ASSERT_CMP` and
 `KIT_ASSERT_STR_EQ`, section 1b. Never compiled out, and the comparison
@@ -63,20 +66,20 @@ kilobyte of data in every binary that includes the header, which is the wrong
 trade for a file meant to be copied around. `build.c` decides on content
 rather than on timestamps because of them.
 
+**UTF-8.** `kit_utf8_*`, section 24. Decoding never fails and always
+advances, so a loop over bytes another program produced terminates; overlong
+encodings, surrogates and anything above U+10FFFF are refused rather than
+tolerated. No case folding, no normalisation, no display width: those need
+the Unicode tables, which are larger than this header and change every year.
+
+**Glob.** `kit_glob_match`, section 25, over codepoints rather than bytes.
+Checked against the system's `fnmatch` over five hundred pattern and text
+pairs, which is where its corner cases come from. The backtracking is
+iterative: no pattern makes it recurse.
+
 Not done, deliberately: the inline overflow guards in `kit_array_reserve`
 and in the integer parsers still stand on their own. Rewiring working code
 that aborts anyway would be churn for no behaviour a caller can see.
-
-### Not started
-
-**UTF-8.** `kit__utf8_cut` only protects `KitError`'s message truncation
-from splitting a multi-byte sequence; it is internal, unexported, and does
-nothing else. The string module is explicitly ASCII-only, by design
-(`kit_str_eq_nocase`'s doc comment says so), and nothing decodes, encodes,
-validates or iterates codepoints.
-
-**Glob matching.** `kit_fs_list` lists a directory's entries but nothing
-filters them against a pattern such as `*.c` or `test_*.o`.
 
 ### Partially developed
 
@@ -84,7 +87,8 @@ filters them against a pattern such as `*.c` or `test_*.o`.
 `kit_lerpf` and `kit_remapf` cover the vector-maths use case the section
 grew from. Checked arithmetic now sits beside it as its own section, but
 there is still no general numeric toolbox: no min/max beyond two values,
-nothing for fixed-point or rational values.
+nothing for fixed-point or rational values. Left alone deliberately: none of
+it has turned up as something an example wanted and could not write itself.
 
 ### Already covered, despite looking missing at first glance
 

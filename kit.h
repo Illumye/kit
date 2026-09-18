@@ -47,6 +47,7 @@
  *   22. Heap         kit_heap_push, kit_heap_pop
  *   23. Checksums    kit_crc32, kit_sha256_*
  *   24. UTF-8        kit_utf8_*
+ *   25. Glob         kit_glob_match
  *
  * REQUIREMENTS:
  *   C11 or later. On POSIX systems the implementation uses clock_gettime(),
@@ -1976,6 +1977,41 @@ bool kit_utf8_valid(KitStr sv);
 /* How many codepoints, counting each malformed byte as one, so that it never
  * answers less than the number of characters a reader would see. */
 size_t kit_utf8_count(KitStr sv);
+
+/* --------------------------------------------------------------------------
+ * SECTION 25 : GLOB
+ *
+ * The patterns everyone already knows from a shell, for choosing among names
+ * a directory listing gave you.
+ *
+ *   kit_glob_match("*.c", "main.c")          true
+ *   kit_glob_match("test_?.o", "test_a.o")   true
+ *   kit_glob_match("[a-m]*.txt", "notes.txt") false
+ *
+ *   *        any run of characters, none included
+ *   ?        exactly one character
+ *   [abc]    one of these
+ *   [a-z]    one from this range
+ *   [!abc]   one that is none of these, and [^abc] means the same
+ *   \*       the character itself, for a name that really has a star in it
+ *
+ * Characters rather than bytes: ? matches one codepoint, and a range compares
+ * codepoints, so a pattern over accented text behaves the way it reads.
+ *
+ * A star crosses anything, separators included, so a pattern can be written
+ * for a whole path and "*" alone matches every path there is. Directory-by-directory
+ * matching is a rule about paths rather than about patterns, and a caller
+ * that wants it splits on the separator and matches each part.
+ *
+ * An unterminated class is not a class: "[abc" matches a name that literally
+ * begins with a bracket, which is what a shell does with it.
+ *
+ * Backtracking is iterative, with one place to return to. A pattern like
+ * "*a*a*a*b" against a long run of a's costs time, never the stack: no input
+ * makes this recurse.
+ * -------------------------------------------------------------------------- */
+
+bool kit_glob_match(const char *pattern, const char *text);
 
 #ifdef __cplusplus
 }   /* extern "C" */
@@ -4929,6 +4965,138 @@ size_t kit_utf8_count(KitStr sv) {
         total++;
     }
     return total;
+}
+
+/* --------------------------------------------------------------------------
+ * Glob
+ * -------------------------------------------------------------------------- */
+
+static void kit__glob_skip(KitStr *sv, size_t bytes) {
+    sv->data  += bytes;
+    sv->count -= bytes;
+}
+
+/* Is there a ']' closing this class? Without one the '[' is an ordinary
+ * character, which is what a shell decides too. The first ']' of a class is
+ * a member of it rather than its end, so that "[]]" can mean a bracket. */
+static bool kit__glob_class_ends(KitStr pattern) {
+    KitStr scan = pattern;
+    kit__glob_skip(&scan, 1);                                  /* '[' */
+    if (scan.count > 0 && (scan.data[0] == '!' || scan.data[0] == '^'))
+        kit__glob_skip(&scan, 1);
+    if (scan.count > 0 && scan.data[0] == ']') kit__glob_skip(&scan, 1);
+
+    return kit_str_find_char(scan, ']') != KIT_NPOS;
+}
+
+/* One class against one character. The pattern is left just past the ']'. */
+static bool kit__glob_class(KitStr *pattern, uint32_t have) {
+    KitStr scan = *pattern;
+    kit__glob_skip(&scan, 1);                                  /* '[' */
+
+    bool negated = false;
+    if (scan.count > 0 && (scan.data[0] == '!' || scan.data[0] == '^')) {
+        negated = true;
+        kit__glob_skip(&scan, 1);
+    }
+
+    bool matched = false;
+    bool first   = true;
+    while (scan.count > 0 && (first || scan.data[0] != ']')) {
+        uint32_t low  = 0, high = 0;
+        size_t   used = kit_utf8_decode(scan, &low);
+        kit__glob_skip(&scan, used);
+        high  = low;
+        first = false;
+
+        /* A '-' just before the ']' is a plain character, not a range. */
+        if (scan.count >= 2 && scan.data[0] == '-' && scan.data[1] != ']') {
+            kit__glob_skip(&scan, 1);
+            used = kit_utf8_decode(scan, &high);
+            kit__glob_skip(&scan, used);
+        }
+
+        if (have >= low && have <= high) matched = true;
+    }
+
+    kit__glob_skip(&scan, 1);                                  /* ']' */
+    *pattern = scan;
+    return matched != negated;
+}
+
+/* One pattern element against one character, advancing both when they agree
+ * and touching neither when they do not. */
+static bool kit__glob_one(KitStr *pattern, KitStr *text) {
+    uint32_t have     = 0;
+    size_t   used_t   = kit_utf8_decode(*text, &have);
+    if (used_t == 0) return false;
+
+    KitStr scan = *pattern;
+
+    if (scan.data[0] == '?') {
+        kit__glob_skip(&scan, 1);
+        *pattern = scan;
+        kit__glob_skip(text, used_t);
+        return true;
+    }
+
+    if (scan.data[0] == '[' && kit__glob_class_ends(scan)) {
+        if (!kit__glob_class(&scan, have)) return false;
+        *pattern = scan;
+        kit__glob_skip(text, used_t);
+        return true;
+    }
+
+    /* A backslash makes the next character ordinary, including a star. */
+    if (scan.data[0] == '\\' && scan.count > 1) kit__glob_skip(&scan, 1);
+
+    uint32_t want   = 0;
+    size_t   used_p = kit_utf8_decode(scan, &want);
+    if (want != have) return false;
+
+    kit__glob_skip(&scan, used_p);
+    *pattern = scan;
+    kit__glob_skip(text, used_t);
+    return true;
+}
+
+bool kit_glob_match(const char *pattern, const char *text) {
+    if (!pattern || !text) return false;
+
+    KitStr rest_p = kit_str_from(pattern);
+    KitStr rest_t = kit_str_from(text);
+
+    /* Where to come back to when a star turns out to have taken too little:
+     * one place is enough, since a second star supersedes the first. */
+    KitStr resume_p  = KIT_ZEROED, resume_t = KIT_ZEROED;
+    bool   can_retry = false;
+
+    while (rest_t.count > 0) {
+        if (rest_p.count > 0 && rest_p.data[0] == '*') {
+            kit__glob_skip(&rest_p, 1);
+            resume_p  = rest_p;
+            resume_t  = rest_t;
+            can_retry = true;
+            continue;
+        }
+
+        if (rest_p.count > 0 && kit__glob_one(&rest_p, &rest_t)) continue;
+
+        if (!can_retry) return false;
+
+        /* Hand the star one more character and try what follows it again. */
+        size_t used = kit_utf8_decode(resume_t, NULL);
+        if (used == 0) return false;
+        kit__glob_skip(&resume_t, used);
+
+        rest_p = resume_p;
+        rest_t = resume_t;
+    }
+
+    /* The text is spent, so what is left of the pattern has to be able to
+     * match nothing at all. */
+    while (rest_p.count > 0 && rest_p.data[0] == '*') kit__glob_skip(&rest_p, 1);
+    return rest_p.count == 0;
 }
 
 #endif /* KIT_IMPLEMENTATION && !KIT__IMPLEMENTATION_DONE */

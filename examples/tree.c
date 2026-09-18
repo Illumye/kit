@@ -1,11 +1,15 @@
 /*
  * Walking a directory, which is the filesystem layer doing what a build tool
  * or an installer needs: list, classify, measure, and report where it failed.
+ * It also answers the question a listing alone never does, which files are
+ * the big ones, in one pass and without sorting the tree.
  *
  * Shows: kit_fs_list and the rest of the filesystem, the path helpers, the
- * scratch allocator for the paths built along the way, and the timer.
+ * scratch allocator for the paths built along the way, a heap for the N
+ * largest, glob patterns for choosing among the names, and the timer.
  *
  *   ./examples/tree --depth 2 examples
+ *   ./examples/tree --match '*.c' --largest 5 examples
  */
 
 #define KIT_IMPLEMENTATION
@@ -28,6 +32,7 @@ typedef struct {
     Biggest   biggest;              /* a heap of the largest seen so far */
     size_t    want;                 /* how many of them to keep */
     KitArena *names;                /* where the kept paths live */
+    const char *match;              /* the pattern a file has to answer to */
 } Totals;
 
 /* Smallest first, so that the one to drop when something bigger arrives is
@@ -96,6 +101,11 @@ static bool walk(const char *path, int depth, int max_depth, Totals *totals, Kit
             break;
         }
         case KIT_FILE_KIND_REGULAR: {
+            /* The filter applies to what is reported, never to where the walk
+             * goes: a directory is always entered, or "*.o" would only ever
+             * find the object files sitting at the top. */
+            if (!kit_glob_match(totals->match, name)) break;
+
             int64_t size = kit_fs_size(child, err);
             int64_t when = kit_fs_mtime(child, err);
             if (size < 0 || when < 0) { result = false; break; }
@@ -144,10 +154,12 @@ int main(int argc, char **argv) {
 
     int  depth = 2, largest = 3;
     bool help  = false;
+    const char *match = "*";
     KitCliOpt opts[] = {
-        KIT_CLI_INT ('d', "depth",   "N", "How deep to go",           &depth),
-        KIT_CLI_INT ('l', "largest", "N", "How many big files to name", &largest),
-        KIT_CLI_FLAG('h', "help",    "Show this help",                &help),
+        KIT_CLI_INT ('d', "depth",   "N",    "How deep to go",             &depth),
+        KIT_CLI_INT ('l', "largest", "N",    "How many big files to name", &largest),
+        KIT_CLI_STR ('m', "match",   "GLOB", "Only files matching this",   &match),
+        KIT_CLI_FLAG('h', "help",    "Show this help",                     &help),
     };
     if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) return 1;
     if (help) { kit_cli_usage_arr(stdout, prog, opts); return 0; }
@@ -171,6 +183,7 @@ int main(int argc, char **argv) {
     Totals   totals = KIT_ZEROED;
     totals.want     = (size_t)(largest < 0 ? 0 : largest);
     totals.names    = &names;
+    totals.match    = match;
 
     KitError err   = KIT_ZEROED;
     KitTimer clock = kit_timer_start();

@@ -49,8 +49,10 @@ static bool collect_sources(KitFileList *sources, KitFileList *headers, KitError
         const char *name = entries.items[i];
         char       *path = kit_scratch_printf("%s/%s", SRC_DIR, name);
 
-        if (kit_str_ends_with_cstr(KIT_STR(name), ".c"))      kit_array_push(sources, path);
-        else if (kit_str_ends_with_cstr(KIT_STR(name), ".h")) kit_array_push(headers, path);
+        /* The patterns a person would have typed at a shell, rather than the
+         * suffix test they stand for. */
+        if      (kit_glob_match("*.c", name)) kit_array_push(sources, path);
+        else if (kit_glob_match("*.h", name)) kit_array_push(headers, path);
     }
 
     if (sources->count == 0)

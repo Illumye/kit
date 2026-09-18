@@ -56,6 +56,7 @@ new one.
 | Heap | `kit_heap` | A priority queue over a dynamic array |
 | Checksums | `kit_crc32`, `kit_sha256` | A cheap check, and a digest that identifies content |
 | UTF-8 | `kit_utf8` | Where characters begin and end, and whether the bytes are well formed |
+| Glob | `kit_glob_match` | The shell's patterns, over characters rather than bytes |
 
 Each module is documented where it is declared. Read the header.
 
@@ -177,7 +178,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 190 tests over sixteen files, and the header compiles warning-free
+The suite is 203 tests over seventeen files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 
@@ -190,12 +191,12 @@ the build stops.
 
 | Example | What it does | What it leans on |
 |---|---|---|
-| `build.c` | Compiles `examples/demo`, rebuilding on content | filesystem, processes, scratch, SHA-256 |
+| `build.c` | Compiles `examples/demo`, rebuilding on content | filesystem, processes, glob, SHA-256 |
 | `config.c` | Reads an INI file into a map | strings, map, arena, errors with context |
 | `journal.c` | Rotates a log file when it grows | filesystem writes, logger configuration, error codes |
 | `orbit.c` | Steps a few bodies around a centre | vectors, scalar maths, arena, timer |
 | `runner.c` | Reports on other programs and runs them | commands, processes, captured output, ring buffer |
-| `tree.c` | Walks a directory, measures it, names its biggest files | filesystem, paths, scratch, heap |
+| `tree.c` | Walks a directory, measures it, names its biggest files | filesystem, paths, heap, glob |
 | `wordfreq.c` | Counts words in a text, accents included | string views, map, arrays, UTF-8 |
 | `peek.c` | Says what a file is, sums it, shows its bytes | option parsing, file kinds, checksums, hex dump |
 
@@ -204,7 +205,7 @@ make examples
 ./examples/config examples/demo/app.conf --list
 ./examples/peek --sums -n 32 examples/demo/app.conf
 ./examples/wordfreq --top 5 --bench 100 examples/demo/prose.txt
-./examples/tree --depth 2 --largest 5 examples
+./examples/tree --match '*.c' --largest 5 examples
 ./examples/runner --check cc make git
 ./examples/orbit --bodies 5 --steps 500
 ./examples/journal --dir build/journal --limit 2048 --lines 200

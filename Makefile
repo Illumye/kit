@@ -176,6 +176,7 @@ check-examples: $(EXAMPLE_BIN)
 	@./examples/wordfreq --stop-words --top 40 examples/demo/prose-utf8.txt | grep -q 'bibliothèque'
 	@./examples/tree --depth 2 examples/demo | grep -q 'app.conf'
 	@./examples/tree --depth 2 --largest 2 examples/demo | grep -q 'largest 2'
+	@./examples/tree --depth 2 --match '*.conf' examples/demo | grep -q '2 files'
 	@./examples/orbit --bodies 3 --steps 50 | grep -q 'spin axis'
 	@./examples/runner -- echo hello | grep -q '^hello$$'
 	@./examples/runner -- sh -c 'for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo line $$i; done; exit 7' 2>&1 \
