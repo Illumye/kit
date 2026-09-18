@@ -29,6 +29,11 @@ static const char *human(int64_t bytes) {
 }
 
 static bool walk(const char *path, int depth, int max_depth, Totals *totals, KitError *err) {
+    /* The recursion only goes down while depth + 1 < max_depth, so a call
+     * that arrives past the limit means the guard below was changed and the
+     * walk no longer stops where it was told to. */
+    KIT_ASSERT_CMP(depth, <=, max_depth);
+
     KitFileList entries = KIT_ZEROED;
     if (!kit_fs_list(path, &entries, err)) return false;
 
@@ -59,7 +64,16 @@ static bool walk(const char *path, int depth, int max_depth, Totals *totals, Kit
             if (size < 0 || when < 0) { result = false; break; }
 
             totals->files++;
-            totals->bytes += size;
+            /* The one sum in this program whose terms come from outside it.
+             * Refusing to wrap is what keeps the reported total the last one
+             * that was true, rather than a small number that looks right. */
+            if (!kit_num_add(totals->bytes, size, &totals->bytes)) {
+                kit_error_set(err, KIT_ERR_RANGE,
+                              "%s takes the total past what a signed 64-bit count holds",
+                              child);
+                result = false;
+                break;
+            }
             if (when > totals->newest) totals->newest = when;
 
             const char *ext = kit_path_ext(name);

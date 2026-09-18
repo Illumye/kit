@@ -51,6 +51,12 @@ static bool collect_sources(KitFileList *sources, KitFileList *headers, KitError
 
 /* The object path for a source: examples/demo/greet.c -> build/demo/greet.o */
 static char *object_for(const char *source) {
+    /* collect_sources only ever hands over a ".c" file, and this is where
+     * that promise is spent: two characters are dropped without looking, and
+     * on a shorter name the count would wrap rather than shorten. A contract
+     * the caller upholds is worth one line saying so. */
+    KIT_ASSERT_STR_EQ(kit_path_ext(source), ".c");
+
     KitStr stem = KIT_STR(kit_path_basename(source));
     stem.count -= 2;                       /* drop the ".c" */
     return kit_scratch_printf("%s/%.*s.o", BUILD_DIR, KIT_STR_ARG(stem));
@@ -172,6 +178,11 @@ int main(int argc, char **argv) {
         }
         kit_array_push(&objects, object);
     }
+
+    /* One object per source, or the link is about to succeed on a set that is
+     * missing something: a failure that produces a working binary from stale
+     * parts, which is the worst kind. */
+    KIT_ASSERT_CMP(objects.count, ==, sources.count);
 
     if (!link_target(&objects, &err)) {
         kit_error_context(&err, "linking");

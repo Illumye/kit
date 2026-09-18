@@ -96,6 +96,12 @@ static bool parse(Config *cfg, const char *path, KitError *err) {
                 kit_error_set(err, KIT_ERR_INVALID, "line %d: unterminated section header", number);
                 KIT_BAIL(false);
             }
+            /* The two tests above found a '[' and a ']', and they cannot be
+             * the same character, so there are at least two to cut. Reorder
+             * those tests and the second cut underflows a size_t instead of
+             * shortening anything. */
+            KIT_ASSERT(line.count >= 2);
+
             kit_str_take(&line, 1);               /* '[' */
             kit_str_take_right(&line, 1);         /* ']' */
             section = kit_str_trim(line);

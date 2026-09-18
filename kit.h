@@ -23,6 +23,7 @@
  *
  * SECTIONS:
  *   1.  Logging      kit_log_*, KIT_LOG
+ *   1b. Assertions   KIT_ASSERT, KIT_ASSERT_MSG, KIT_ASSERT_CMP
  *   2.  Errors       kit_error_*, KitError
  *   3.  Filesystem   kit_fs_*
  *   4.  Arrays       kit_array_*
@@ -37,6 +38,7 @@
  *   13. Map          kit_map_*
  *   14. Paths        kit_path_*
  *   15. Maths        kit_clampf, kit_lerpf, kit_remapf, KIT_MIN, KIT_MAX
+ *   16. Arithmetic   kit_num_add, kit_num_sub, kit_num_mul
  *
  * REQUIREMENTS:
  *   C11 or later. On POSIX systems the implementation uses clock_gettime(),
@@ -298,6 +300,182 @@ KIT_NORETURN void kit__panic(const char *file, int line,
 #define KIT_PANIC(...)       kit__panic(__FILE__, __LINE__, __VA_ARGS__)
 #define KIT_TODO(msg)        KIT_PANIC("TODO: %s", msg)
 #define KIT_UNREACHABLE(msg) KIT_PANIC("UNREACHABLE: %s", msg)
+
+/* --------------------------------------------------------------------------
+ * SECTION 1b : ASSERTIONS
+ *
+ * A contract the program checks on itself: something the code believes, that
+ * no input can make false. A violated one is a bug, so these abort through
+ * KIT_PANIC rather than report a KitError, which is for a failure the caller
+ * can do something about.
+ *
+ *   KIT_ASSERT(capacity > 0);
+ *   KIT_ASSERT_MSG(head < tail, "ring corrupted after %zu writes", writes);
+ *   KIT_ASSERT_CMP(used, <=, capacity);
+ *   KIT_ASSERT_STR_EQ(kit_path_ext("a.c"), ".c");
+ *
+ * They are never compiled out, NDEBUG included. A release build that skips
+ * its contracts is a build whose bugs only appear where nobody is looking,
+ * and the comparison is a branch that predicts perfectly.
+ *
+ * KIT_ASSERT_CMP prints both sides with the format its type calls for, which
+ * is what turns "assertion failed" into something that needs no debugger:
+ *
+ *   [PANIC] cache.c:88: assertion failed: used <= capacity
+ *     left:  5000
+ *     right: 4096
+ *   Aborting...
+ *
+ * Any operator goes between the two values, so one macro covers ==, !=, <,
+ * <=, > and >=. Both operands are evaluated a second time to be printed, but
+ * only on the failing path, a few microseconds before the process dies.
+ *
+ * Strings need KIT_ASSERT_STR_EQ: == on two char pointers compares addresses,
+ * and two equal strings routinely sit at different ones. NULL is handled and
+ * printed as such rather than dereferenced.
+ *
+ * One surprise, and it belongs to the language rather than to the macro: a
+ * character constant has type int in C, so KIT_ASSERT_CMP(sep, ==, '/')
+ * prints the right side as 47. Compare against a char variable to see it as a
+ * character. C++ types the same constant as char and prints '/'.
+ * -------------------------------------------------------------------------- */
+
+/* Room for one printed value. Enough for any number, and long strings are cut
+ * with an ellipsis so that a truncated one never reads as complete. */
+#define KIT__VALUE_CAPACITY 64
+
+static inline const char *kit__value_i(char *buf, size_t n, long long v) {
+    snprintf(buf, n, "%lld", v);
+    return buf;
+}
+static inline const char *kit__value_u(char *buf, size_t n, unsigned long long v) {
+    snprintf(buf, n, "%llu", v);
+    return buf;
+}
+static inline const char *kit__value_f(char *buf, size_t n, long double v) {
+    snprintf(buf, n, "%Lg", v);
+    return buf;
+}
+static inline const char *kit__value_c(char *buf, size_t n, int v) {
+    if (v >= 32 && v < 127) snprintf(buf, n, "'%c'", v);
+    else                    snprintf(buf, n, "'\\x%02x'", (unsigned)v & 0xffu);
+    return buf;
+}
+static inline const char *kit__value_p(char *buf, size_t n, const void *v) {
+    snprintf(buf, n, "%p", v);
+    return buf;
+}
+
+/* Quoted, and cut with an ellipsis when it does not fit: a value shown in an
+ * assertion has to be either complete or visibly incomplete. */
+static inline const char *kit__value_s(char *buf, size_t n, const char *v) {
+    if (!v) {
+        snprintf(buf, n, "NULL");
+    } else if (strlen(v) + 3 > n) {      /* two quotes and a terminator */
+        snprintf(buf, n, "\"%.*s...", (int)(n - 6), v);
+    } else {
+        snprintf(buf, n, "\"%s\"", v);
+    }
+    return buf;
+}
+
+static inline bool kit__cstr_eq(const char *a, const char *b) {
+    if (a == b)       return true;
+    if (!a || !b)     return false;
+    return strcmp(a, b) == 0;
+}
+
+/* Picks how to print a value from its type. Every integer widens to the
+ * largest of its signedness, so sixteen types need six renderers, and a
+ * pointer reaches kit__value_p as a real void * rather than through a
+ * variadic "%p", which only happens to work. */
+#ifdef __cplusplus
+}   /* extern "C": the overload set below has to have C++ linkage */
+
+static inline const char *kit__value(char *b, size_t n, bool v)               { return kit__value_u(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, char v)               { return kit__value_c(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, signed char v)        { return kit__value_i(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, unsigned char v)      { return kit__value_u(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, short v)              { return kit__value_i(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, unsigned short v)     { return kit__value_u(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, int v)                { return kit__value_i(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, unsigned v)           { return kit__value_u(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, long v)               { return kit__value_i(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, unsigned long v)      { return kit__value_u(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, long long v)          { return kit__value_i(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, unsigned long long v) { return kit__value_u(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, double v)             { return kit__value_f(b, n, (long double)v); }
+static inline const char *kit__value(char *b, size_t n, long double v)        { return kit__value_f(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, const char *v)        { return kit__value_s(b, n, v); }
+static inline const char *kit__value(char *b, size_t n, const void *v)        { return kit__value_p(b, n, v); }
+
+extern "C" {
+#    define KIT__VALUE(buf, v) kit__value((buf), sizeof (buf), (v))
+#else
+#    define KIT__VALUE(buf, v)                     \
+        _Generic((v),                              \
+            _Bool:              kit__value_u,      \
+            char:               kit__value_c,      \
+            signed char:        kit__value_i,      \
+            unsigned char:      kit__value_u,      \
+            short:              kit__value_i,      \
+            unsigned short:     kit__value_u,      \
+            int:                kit__value_i,      \
+            unsigned:           kit__value_u,      \
+            long:               kit__value_i,      \
+            unsigned long:      kit__value_u,      \
+            long long:          kit__value_i,      \
+            unsigned long long: kit__value_u,      \
+            float:              kit__value_f,      \
+            double:             kit__value_f,      \
+            long double:        kit__value_f,      \
+            char *:             kit__value_s,      \
+            const char *:       kit__value_s,      \
+            default:            kit__value_p)((buf), sizeof (buf), (v))
+#endif
+
+#define KIT_ASSERT(cond)                                                     \
+    do {                                                                     \
+        if (!(cond))                                                         \
+            kit__panic(__FILE__, __LINE__, "assertion failed: %s", #cond);   \
+    } while (0)
+
+/* Same, with an explanation printf-formatted after the expression: the state
+ * that made the contract fail, which the expression alone rarely shows. */
+#define KIT_ASSERT_MSG(cond, ...)                                            \
+    do {                                                                     \
+        if (!(cond)) {                                                       \
+            char kit__why[256];                                              \
+            snprintf(kit__why, sizeof kit__why, __VA_ARGS__);                \
+            kit__panic(__FILE__, __LINE__, "assertion failed: %s: %s",       \
+                       #cond, kit__why);                                     \
+        }                                                                    \
+    } while (0)
+
+#define KIT_ASSERT_CMP(a, op, b)                                             \
+    do {                                                                     \
+        if (!((a) op (b))) {                                                 \
+            char kit__lhs[KIT__VALUE_CAPACITY], kit__rhs[KIT__VALUE_CAPACITY]; \
+            kit__panic(__FILE__, __LINE__,                                   \
+                       "assertion failed: %s %s %s\n  left:  %s\n  right: %s", \
+                       #a, #op, #b,                                          \
+                       KIT__VALUE(kit__lhs, (a)),                            \
+                       KIT__VALUE(kit__rhs, (b)));                           \
+        }                                                                    \
+    } while (0)
+
+#define KIT_ASSERT_STR_EQ(a, b)                                              \
+    do {                                                                     \
+        const char *kit__x = (a), *kit__y = (b);                             \
+        if (!kit__cstr_eq(kit__x, kit__y)) {                                 \
+            char kit__lhs[KIT__VALUE_CAPACITY], kit__rhs[KIT__VALUE_CAPACITY]; \
+            kit__panic(__FILE__, __LINE__,                                   \
+                       "assertion failed: %s equals %s\n  left:  %s\n  right: %s", \
+                       #a, #b,                                               \
+                       kit__value_s(kit__lhs, sizeof kit__lhs, kit__x),      \
+                       kit__value_s(kit__rhs, sizeof kit__rhs, kit__y));     \
+        }                                                                    \
+    } while (0)
 
 /* --------------------------------------------------------------------------
  * SECTION 2 : ERRORS
@@ -1216,6 +1394,167 @@ static inline float kit_remapf(float x,
 /* Degrees <-> radians. */
 #define KIT_DEG2RAD(d) ((d) * (float)(3.14159265358979323846 / 180.0))
 #define KIT_RAD2DEG(r) ((r) * (float)(180.0 / 3.14159265358979323846))
+
+/* --------------------------------------------------------------------------
+ * SECTION 16 : CHECKED ARITHMETIC
+ *
+ * Integer arithmetic that reports the overflow it would have produced instead
+ * of wrapping around, or, when the operands are signed, instead of being
+ * undefined behaviour the optimizer is free to assume away.
+ *
+ *   size_t total = 0;
+ *   if (!kit_num_add(total, entry_size, &total))
+ *       return kit_error_set(err, KIT_ERR_RANGE, "directory too large to total");
+ *
+ * The three take the destination last and answer whether the result fits.
+ * When it does not, the destination is left untouched, so a running total
+ * that overflows keeps the last value that was true.
+ *
+ * The type of the operation is the type of *out, not that of the operands:
+ * the operands are converted to it on the way in, exactly as an assignment
+ * would convert them. That conversion is the one place a value can still be
+ * lost, and it is also the one the compiler sees, which is why this library
+ * builds with -Wconversion.
+ *
+ * Six types are covered, which is every integer type a program reaches for:
+ * int, long, long long and their unsigned counterparts. That is also
+ * int32_t, int64_t, uint32_t, uint64_t, size_t and ptrdiff_t, whichever of
+ * the six each one turns out to be on the platform. A type outside the list,
+ * short or char, fails to compile rather than silently picking a wider one.
+ * -------------------------------------------------------------------------- */
+
+/* The compiler knows the carry flag is there; these compile to one
+ * instruction and a branch. The portable versions below are correct but ask
+ * for two comparisons, and for signed operands they have to test before
+ * computing, because computing first is already the undefined behaviour they
+ * exist to avoid.
+ *
+ * KIT_NO_OVERFLOW_BUILTINS forces the portable path on a compiler that has
+ * the builtins. It exists so that the suite can run both, since otherwise the
+ * portable one is dead code everywhere except on the compiler that has no
+ * test machine here. */
+#if !defined(KIT_NO_OVERFLOW_BUILTINS) \
+    && (defined(__clang__) || (defined(__GNUC__) && __GNUC__ >= 5))
+/* Through a temporary, because the builtins write the wrapped result even
+ * when they report the overflow, and leaving the destination alone is what
+ * lets a running total keep the last value that was true. */
+#    define KIT__NUM_DEFINE(suffix, T, TMIN, TMAX)                            \
+        static inline bool kit__add_##suffix(T a, T b, T *out) {              \
+            T tmp;                                                            \
+            if (__builtin_add_overflow(a, b, &tmp)) return false;             \
+            *out = tmp;                                                       \
+            return true;                                                      \
+        }                                                                     \
+        static inline bool kit__sub_##suffix(T a, T b, T *out) {              \
+            T tmp;                                                            \
+            if (__builtin_sub_overflow(a, b, &tmp)) return false;             \
+            *out = tmp;                                                       \
+            return true;                                                      \
+        }                                                                     \
+        static inline bool kit__mul_##suffix(T a, T b, T *out) {              \
+            T tmp;                                                            \
+            if (__builtin_mul_overflow(a, b, &tmp)) return false;             \
+            *out = tmp;                                                       \
+            return true;                                                      \
+        }
+#    define KIT__NUM_DEFINE_SIGNED(suffix, T, TMIN, TMAX) \
+            KIT__NUM_DEFINE(suffix, T, TMIN, TMAX)
+#    define KIT__NUM_DEFINE_UNSIGNED(suffix, T, TMAX) \
+            KIT__NUM_DEFINE(suffix, T, 0, TMAX)
+#else
+#    define KIT__NUM_DEFINE_SIGNED(suffix, T, TMIN, TMAX)                     \
+        static inline bool kit__add_##suffix(T a, T b, T *out) {              \
+            if (b > 0 && a > (TMAX) - b) return false;                        \
+            if (b < 0 && a < (TMIN) - b) return false;                        \
+            *out = a + b;                                                     \
+            return true;                                                      \
+        }                                                                     \
+        static inline bool kit__sub_##suffix(T a, T b, T *out) {              \
+            if (b < 0 && a > (TMAX) + b) return false;                        \
+            if (b > 0 && a < (TMIN) + b) return false;                        \
+            *out = a - b;                                                     \
+            return true;                                                      \
+        }                                                                     \
+        static inline bool kit__mul_##suffix(T a, T b, T *out) {              \
+            if (a > 0) {                                                      \
+                if (b > 0) { if (a > (TMAX) / b) return false; }              \
+                else       { if (b < (TMIN) / a) return false; }              \
+            } else if (a < 0) {                                               \
+                if (b > 0)      { if (a < (TMIN) / b) return false; }         \
+                else if (b < 0) { if (a < (TMAX) / b) return false; }         \
+            }                                                                 \
+            *out = a * b;                                                     \
+            return true;                                                      \
+        }
+#    define KIT__NUM_DEFINE_UNSIGNED(suffix, T, TMAX)                         \
+        static inline bool kit__add_##suffix(T a, T b, T *out) {              \
+            if (a > (TMAX) - b) return false;                                 \
+            *out = a + b;                                                     \
+            return true;                                                      \
+        }                                                                     \
+        static inline bool kit__sub_##suffix(T a, T b, T *out) {              \
+            if (a < b) return false;                                          \
+            *out = a - b;                                                     \
+            return true;                                                      \
+        }                                                                     \
+        static inline bool kit__mul_##suffix(T a, T b, T *out) {              \
+            if (a != 0 && b > (TMAX) / a) return false;                       \
+            *out = a * b;                                                     \
+            return true;                                                      \
+        }
+#endif
+
+KIT__NUM_DEFINE_SIGNED(i,   int,       INT_MIN,   INT_MAX)
+KIT__NUM_DEFINE_SIGNED(l,   long,      LONG_MIN,  LONG_MAX)
+KIT__NUM_DEFINE_SIGNED(ll,  long long, LLONG_MIN, LLONG_MAX)
+KIT__NUM_DEFINE_UNSIGNED(u,   unsigned,           UINT_MAX)
+KIT__NUM_DEFINE_UNSIGNED(ul,  unsigned long,      ULONG_MAX)
+KIT__NUM_DEFINE_UNSIGNED(ull, unsigned long long, ULLONG_MAX)
+
+#ifdef __cplusplus
+}   /* extern "C": the overload set below has to have C++ linkage */
+
+#    define KIT__NUM_OVERLOAD(op, suffix, T)                                  \
+        static inline bool kit__num_##op(T a, T b, T *out) {                  \
+            return kit__##op##_##suffix(a, b, out);                           \
+        }
+#    define KIT__NUM_OVERLOADS(suffix, T)     \
+        KIT__NUM_OVERLOAD(add, suffix, T)     \
+        KIT__NUM_OVERLOAD(sub, suffix, T)     \
+        KIT__NUM_OVERLOAD(mul, suffix, T)
+
+KIT__NUM_OVERLOADS(i,   int)
+KIT__NUM_OVERLOADS(l,   long)
+KIT__NUM_OVERLOADS(ll,  long long)
+KIT__NUM_OVERLOADS(u,   unsigned)
+KIT__NUM_OVERLOADS(ul,  unsigned long)
+KIT__NUM_OVERLOADS(ull, unsigned long long)
+
+extern "C" {
+
+#    define kit_num_add(a, b, out) kit__num_add((a), (b), (out))
+#    define kit_num_sub(a, b, out) kit__num_sub((a), (b), (out))
+#    define kit_num_mul(a, b, out) kit__num_mul((a), (b), (out))
+#else
+
+/* The dispatch is on the destination, whose type is exact: the operands are
+ * converted to it by the call, the way an assignment would. Listing the
+ * fundamental types rather than size_t and uint64_t is not a shortcut, it is
+ * the only spelling that compiles: those are aliases, and naming both an
+ * alias and what it aliases gives _Generic the same type twice. */
+#    define KIT__NUM_PICK(op, out)     \
+        _Generic((out),                \
+            int *:                kit__##op##_i,    \
+            long *:               kit__##op##_l,    \
+            long long *:          kit__##op##_ll,   \
+            unsigned *:           kit__##op##_u,    \
+            unsigned long *:      kit__##op##_ul,   \
+            unsigned long long *: kit__##op##_ull)
+
+#    define kit_num_add(a, b, out) KIT__NUM_PICK(add, (out))((a), (b), (out))
+#    define kit_num_sub(a, b, out) KIT__NUM_PICK(sub, (out))((a), (b), (out))
+#    define kit_num_mul(a, b, out) KIT__NUM_PICK(mul, (out))((a), (b), (out))
+#endif
 
 #ifdef __cplusplus
 }   /* extern "C" */

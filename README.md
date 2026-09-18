@@ -34,6 +34,7 @@ new one.
 | Module | Prefix | What it gives you |
 |---|---|---|
 | Logging | `kit_log`, `KIT_LOG` | Levels, configurable record fields, colour only on a terminal |
+| Assertions | `KIT_ASSERT` | Contracts that abort and print both sides, typed |
 | Errors | `kit_error`, `KitError` | Failures with a category, a native code and a context chain |
 | Filesystem | `kit_fs` | Streamed reads, recursive mkdir, sorted listing, staleness checks |
 | Arrays | `kit_array` | Growable arrays over any `{items, count, capacity}` struct |
@@ -46,6 +47,7 @@ new one.
 | Processes | `kit_command`, `kit_process` | Run a child, wait for it, or capture either stream |
 | Map | `kit_map` | String keys, open addressing |
 | Paths | `kit_path` | `basename`, `dirname`, `join`, all bounded |
+| Arithmetic | `kit_num` | Addition, subtraction and multiplication that refuse to wrap |
 
 Each module is documented where it is declared. Read the header.
 
@@ -82,6 +84,44 @@ installed is `not_found` with the reason the system gave, rather than a child
 that mysteriously exited with code 127. Context is added outermost first as the error travels up. When
 the chain outgrows the buffer, the middle is elided and both the outermost
 context and the root cause are kept.
+
+## Contracts, and arithmetic that refuses to wrap
+
+A `KitError` is for a failure the caller can do something about. An assertion
+is for something the code believes about itself, that no input can make false:
+a violated one is a bug, so it aborts, and it prints both sides with the format
+their type calls for.
+
+```c
+KIT_ASSERT_CMP(used, <=, capacity);
+```
+
+```
+[PANIC] cache.c:88: assertion failed: used <= capacity
+  left:  5000
+  right: 4096
+Aborting...
+```
+
+Any operator goes in the middle, so one macro covers the six comparisons.
+`KIT_ASSERT` takes a plain condition, `KIT_ASSERT_MSG` adds the state behind
+it, and `KIT_ASSERT_STR_EQ` compares strings, because `==` on two pointers
+compares addresses. None of them is compiled out by `NDEBUG`: a release build
+that skips its contracts is one whose bugs only appear where nobody is looking.
+
+Arithmetic on values that came from outside the program has the same problem
+one level down. `kit_num_add`, `kit_num_sub` and `kit_num_mul` report the
+overflow instead of wrapping, and leave the destination alone when they do, so
+a running total keeps the last value that was true.
+
+```c
+if (!kit_num_mul(lines, line_bytes, &planned))
+    return kit_error_set(err, KIT_ERR_RANGE, "%d lines is more than this can count", lines);
+```
+
+The type of the operation is the type of the destination: `int`, `long`,
+`long long` and their unsigned counterparts, which is also `size_t`,
+`ptrdiff_t` and the fixed-width types, whichever of the six each one is here.
 
 ## A taste of it
 
@@ -129,7 +169,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 111 tests over seven files, and the header compiles warning-free
+The suite is 125 tests over nine files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 
@@ -176,6 +216,7 @@ Define these before including the header to change its defaults.
 | `KIT_ARENA_REGION_SIZE` | Size of a new arena region, default 64 KiB |
 | `KIT_READ_CHUNK` | Read buffer size, default 64 KiB |
 | `KIT_NO_THREAD_LOCAL` | One shared scratch arena instead of one per thread |
+| `KIT_NO_OVERFLOW_BUILTINS` | Checked arithmetic without the compiler's builtins, which is how the suite exercises the portable path |
 
 On POSIX the header requests the C library's default feature set, which a
 strict `-std=c11` hides, for `clock_gettime`, `dprintf` and `isatty`. Include it

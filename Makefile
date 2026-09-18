@@ -19,6 +19,11 @@ TEST_SRC := $(wildcard tests/test_*.c)
 TEST_BIN := $(patsubst tests/%.c,tests/run_%,$(TEST_SRC))
 TEST_ASAN:= $(patsubst tests/%.c,tests/run_%_asan,$(TEST_SRC))
 
+# The portable overflow checks are dead code on gcc and clang, which have the
+# builtins, and they are the only ones MSVC ever compiles. Running the same
+# suite twice is what keeps the path this machine cannot reach honest.
+TEST_BIN += tests/run_test_number_portable
+
 SAN = -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all
 
 # Windows cross build. The _WIN32 branches are otherwise never compiled at all.
@@ -47,6 +52,9 @@ tests/run_%: tests/%.c kit.h tests/utest.h
 
 tests/run_%_asan: tests/%.c kit.h tests/utest.h
 	$(CC) $(CFLAGS) -O1 $(SAN) $< -o $@ $(LDLIBS)
+
+tests/run_test_number_portable: tests/test_number.c kit.h tests/utest.h
+	$(CC) $(CFLAGS) -DKIT_NO_OVERFLOW_BUILTINS $< -o $@ $(LDLIBS)
 
 test: $(TEST_BIN)
 	@rc=0; for t in $(TEST_BIN); do ./$$t || rc=1; done; exit $$rc

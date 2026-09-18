@@ -78,7 +78,15 @@ static bool append_line(const Journal *j, const char *line, KitError *err) {
 
     int64_t size = kit_fs_is_file(path) ? kit_fs_size(path, err) : 0;
     if (size < 0) KIT_BAIL(false);
-    if (size >= j->limit && !rotate(j, err)) KIT_BAIL(false);
+    if (size >= j->limit) {
+        if (!rotate(j, err)) KIT_BAIL(false);
+        /* rotate() reported success, so the current file has been renamed out
+         * of the way. If it is still there the rename did nothing, every
+         * later line appends to a file that never rotates, and the only
+         * symptom is a disk filling up days later. */
+        KIT_ASSERT_MSG(!kit_fs_is_file(path), "%s survived rotation at %lld bytes",
+                       path, (long long)size);
+    }
 
     /* Read, append, write: a real journal would keep the file open, but this
      * is the shape that shows the calls. */
@@ -137,7 +145,22 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    Journal journal = { directory, "app.log", limit, kit_clampi(keep, 1, 9) };
+    /* A limit of zero or less would rotate on every single line. */
+    Journal journal = { directory, "app.log", kit_clampi(limit, 1, INT_MAX),
+                        kit_clampi(keep, 1, 9) };
+
+    /* How much this run is about to write, which is a number typed on the
+     * command line multiplied by a size. Left unchecked, --lines 100000000
+     * does not report an absurd plan, it reports a plausible one: the product
+     * wraps and comes back small. */
+    const int line_bytes = 46;
+    int       planned    = 0;
+    if (!kit_num_mul(lines, line_bytes, &planned)) {
+        KIT_ERROR("%d lines of %d bytes is more than this program can count",
+                  lines, line_bytes);
+        return 1;
+    }
+    KIT_INFO("about %d bytes to write, rotating every %d", planned, limit);
 
     for (int i = 0; i < lines; i++) {
         const char *line = kit_scratch_printf("%04d  the quick brown fox jumps over the lazy dog", i);
@@ -162,6 +185,19 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < files.count; ++i) {
         const char *path = kit_scratch_printf("%s%c%s", directory, KIT_PATH_SEP, files.items[i]);
         printf("  %-14s %8lld bytes\n", files.items[i], (long long)kit_fs_size(path, NULL));
+    }
+
+    /* Room before the next rotation, counted in bytes, which is a size and so
+     * unsigned. The file is over the limit as often as it is under it, and an
+     * unsigned subtraction that wraps there does not report a full journal:
+     * it reports one with sixteen exabytes to spare. */
+    int64_t written = kit_fs_size(path_of(&journal, 0), NULL);
+    if (written >= 0) {
+        uint64_t room = 0;
+        if (kit_num_sub((uint64_t)journal.limit, (uint64_t)written, &room))
+            printf("  %llu bytes before the next rotation\n", (unsigned long long)room);
+        else
+            printf("  past the limit already: the next line rotates\n");
     }
 
     /* A copy of the current file, kept as a snapshot, and proof that the
