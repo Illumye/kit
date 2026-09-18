@@ -163,6 +163,7 @@ check-examples: $(EXAMPLE_BIN)
 	@./examples/config examples/demo/app.conf --list | grep -q 'paths.log'
 	@./examples/config examples/demo/broken.conf 2>&1 | grep -q 'expected a whole number'
 	@./examples/wordfreq --top 3 examples/demo/prose.txt | grep -q 'most common: errors'
+	@./examples/wordfreq --bench 5 --top 1 examples/demo/prose.txt | grep -q 'counting.*5 samples'
 	@./examples/tree --depth 2 examples/demo | grep -q 'app.conf'
 	@./examples/orbit --bodies 3 --steps 50 | grep -q 'spin axis'
 	@./examples/runner -- echo hello | grep -q '^hello$$'

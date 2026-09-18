@@ -42,6 +42,7 @@
  *   17. Formatting   kit_fmt_size, kit_fmt_duration
  *   18. Hex dump     kit_hex_dump
  *   19. Random       kit_random_*, KitRandom
+ *   20. Benchmark    kit_bench_run, kit_bench_report
  *
  * REQUIREMENTS:
  *   C11 or later. On POSIX systems the implementation uses clock_gettime(),
@@ -1651,6 +1652,48 @@ double kit_random_double(KitRandom *r);
 /* Uniform over [lo, hi], both included. The bounds may be given in either
  * order. */
 int64_t kit_random_between(KitRandom *r, int64_t lo, int64_t hi);
+
+/* --------------------------------------------------------------------------
+ * SECTION 20 : MICRO-BENCHMARK
+ *
+ * "Is this version faster?" answered with numbers rather than with one
+ * stopwatch reading, which on a machine that is also doing other things is
+ * mostly noise.
+ *
+ *   KitBench b = kit_bench_run("counting", 200, count_pass, &context);
+ *   kit_bench_report(stdout, &b);
+ *
+ *   counting         200 samples  min 0.021 ms  mean 0.024 ms  max 0.115 ms  (4.80 s)
+ *
+ * The body runs once before the clock starts. That first pass pays for page
+ * faults, cold caches and whatever the code initialises lazily, and counting
+ * it as if it were the steady state is the oldest way to publish a wrong
+ * number.
+ *
+ * Read `min` first. It is the run that was interrupted least, which is the
+ * closest thing to what the code costs; the distance to `max` is how much the
+ * rest of the machine got in the way. There is no standard deviation on
+ * purpose: it would mean a square root, and with it a dependency on the maths
+ * library that KIT_NO_VEC_MATH exists to avoid.
+ *
+ * A body that takes less than a microsecond measures the clock rather than
+ * itself. Put the repetition inside it and divide, which is also the only way
+ * to stop the optimizer from deleting work whose result nobody reads.
+ * -------------------------------------------------------------------------- */
+
+typedef struct {
+    const char *name;
+    size_t      samples;
+    double      min_ms;
+    double      mean_ms;
+    double      max_ms;
+    double      total_ms;   /* the timed runs only, warm-up excluded */
+} KitBench;
+
+KitBench kit_bench_run(const char *name, size_t samples,
+                       void (*body)(void *), void *context);
+
+void kit_bench_report(FILE *out, const KitBench *result);
 
 #ifdef __cplusplus
 }   /* extern "C" */
@@ -4185,6 +4228,52 @@ int64_t kit_random_between(KitRandom *r, int64_t lo, int64_t hi) {
     if (value > (uint64_t)INT64_MAX)
         return (int64_t)(value - (uint64_t)INT64_MAX - 1u) + INT64_MIN;
     return (int64_t)value;
+}
+
+/* --------------------------------------------------------------------------
+ * Micro-benchmark
+ * -------------------------------------------------------------------------- */
+
+KitBench kit_bench_run(const char *name, size_t samples,
+                       void (*body)(void *), void *context) {
+    KitBench result = KIT_ZEROED;
+    result.name = name ? name : "unnamed";
+    if (!body) return result;
+    if (samples == 0) samples = 1;
+
+    body(context);   /* warm-up, deliberately not measured */
+
+    double mean = 0.0;
+    for (size_t i = 0; i < samples; i++) {
+        KitTimer clock = kit_timer_start();
+        body(context);
+        double ms = kit_timer_ms(clock);
+
+        result.total_ms += ms;
+        if (i == 0 || ms < result.min_ms) result.min_ms = ms;
+        if (ms > result.max_ms)           result.max_ms = ms;
+
+        /* The mean kept as it goes, rather than a sum divided at the end:
+         * over a long run of small values the running form is the one that
+         * does not lose the low digits. */
+        mean += (ms - mean) / (double)(i + 1);
+    }
+
+    result.samples = samples;
+    result.mean_ms = mean;
+    return result;
+}
+
+void kit_bench_report(FILE *out, const KitBench *result) {
+    if (!out || !result) return;
+
+    char total[KIT_FMT_CAPACITY];
+    kit__stream_lock(out);
+    fprintf(out, "%-16s %zu samples  min %.3f ms  mean %.3f ms  max %.3f ms  (%s)\n",
+            result->name, result->samples, result->min_ms, result->mean_ms,
+            result->max_ms,
+            kit_fmt_duration(total, sizeof total, result->total_ms / 1000.0));
+    kit__stream_unlock(out);
 }
 
 #endif /* KIT_IMPLEMENTATION && !KIT__IMPLEMENTATION_DONE */

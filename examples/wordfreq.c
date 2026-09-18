@@ -63,6 +63,44 @@ static KitStr next_word(KitStr *rest) {
     return kit_str_take(rest, n);
 }
 
+/* Everything one pass over the text needs, and what it found. A struct rather
+ * than a handful of locals because that is the shape a benchmark can call
+ * again: the harness hands a single pointer back to the body it times. */
+typedef struct {
+    KitStr    text;
+    Words    *stop;
+    KitArena *arena;
+    KitMap   *counts;
+    size_t    total, skipped;
+} Pass;
+
+/* Each word, lowercased into the arena and counted in the map. Running this
+ * twice must leave no trace of the first time, and since the keys live in the
+ * arena, emptying one means emptying the other in the same breath. */
+static void count_words(void *context) {
+    Pass *pass = (Pass *)context;
+
+    kit_arena_reset(pass->arena);
+    kit_map_reset(pass->counts);
+    pass->total = pass->skipped = 0;
+
+    KitStr rest = pass->text;
+    for (KitStr word = next_word(&rest); word.count > 0; word = next_word(&rest)) {
+        pass->total++;
+        if (is_stop_word(pass->stop, word)) { pass->skipped++; continue; }
+
+        char *key = kit_arena_strndup(pass->arena, word.data, word.count);
+        for (char *c = key; *c; c++) *c = (char)tolower((unsigned char)*c);
+
+        size_t *counter = (size_t *)kit_map_get(pass->counts, key);
+        if (counter) { (*counter)++; continue; }
+
+        counter  = kit_arena_alloc_array(pass->arena, size_t, 1);
+        *counter = 1;
+        kit_map_set(pass->counts, key, counter);
+    }
+}
+
 static int by_count_then_word(const void *a, const void *b) {
     const Entry *x = (const Entry *)a, *y = (const Entry *)b;
     if (x->count != y->count) return x->count < y->count ? 1 : -1;
@@ -72,10 +110,11 @@ static int by_count_then_word(const void *a, const void *b) {
 int main(int argc, char **argv) {
     const char *prog = kit_cli_shift(&argc, &argv);
 
-    int  top = 10;
+    int  top = 10, bench = 0;
     bool help = false, keep_stop_words = false;
     KitCliOpt opts[] = {
         KIT_CLI_INT ('n', "top", "N", "How many words to print", &top),
+        KIT_CLI_INT ('b', "bench", "N", "Time the counting pass N times", &bench),
         KIT_CLI_FLAG('s', "stop-words", "Count the common words too", &keep_stop_words),
         KIT_CLI_FLAG('h', "help", "Show this help", &help),
     };
@@ -103,26 +142,21 @@ int main(int argc, char **argv) {
 
     /* The map stores counters that live in an arena, so nothing is freed one
      * by one and the keys stay valid as long as the arena does. */
-    KitArena arena   = KIT_ZEROED;
-    KitMap   counts  = KIT_ZEROED;
-    size_t   total   = 0, skipped = 0;
-    KitStr   rest    = kit_str_from_parts(text, size);
+    KitArena arena  = KIT_ZEROED;
+    KitMap   counts = KIT_ZEROED;
+    Pass     pass   = { kit_str_from_parts(text, size), &stop, &arena, &counts, 0, 0 };
 
-    for (KitStr word = next_word(&rest); word.count > 0; word = next_word(&rest)) {
-        total++;
-        if (is_stop_word(&stop, word)) { skipped++; continue; }
+    count_words(&pass);
 
-        char *key = kit_arena_strndup(&arena, word.data, word.count);
-        for (char *c = key; *c; c++) *c = (char)tolower((unsigned char)*c);
-
-        size_t *counter = (size_t *)kit_map_get(&counts, key);
-        if (counter) { (*counter)++; continue; }
-
-        counter  = kit_arena_alloc_array(&arena, size_t, 1);
-        *counter = 1;
-        kit_map_set(&counts, key, counter);
+    /* The same pass again, timed, when asked. Nothing is set up for it: the
+     * work the program does anyway is the work worth measuring. */
+    if (bench > 0) {
+        KitBench timed = kit_bench_run("counting", (size_t)bench, count_words, &pass);
+        kit_bench_report(stdout, &timed);
     }
-    free(text);
+
+    size_t total = pass.total, skipped = pass.skipped;
+    free(text);                             /* the passes read straight from it */
 
     /* Ranking wants an array, which the map does not pretend to be. */
     /* A word that turned out to be noise after all can simply go. */
