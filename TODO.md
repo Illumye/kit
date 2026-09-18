@@ -11,7 +11,7 @@ section below; the rest of this file is the earlier audit and stands as is.
 ## Feature gaps (audit of 2026-09-18)
 
 Development is going through these in five phases, in the order below.
-Phases 1 and 2 are done.
+Phases 1, 2 and 3 are done.
 
 ### Done since the audit
 
@@ -45,6 +45,17 @@ Warm-up excluded, minimum reported first. No standard deviation on purpose:
 the square root would drag in the maths library that `KIT_NO_VEC_MATH`
 exists to avoid.
 
+**Sorting.** `kit_array_sort`, in the array section, taking the element size
+and the count from the array. Not stable, since `qsort` is not.
+
+**Ring buffer.** `kit_ring_*`, section 21, over a struct of your own like the
+arrays. A window over the most recent entries, not a queue that must not
+drop: the oldest going out of the front is the point.
+
+**Heap.** `kit_heap_push` and `kit_heap_pop`, section 22, over the array
+macros and ordered by a `qsort` comparator. Only `items[0]` is ordered, which
+is what makes "the N largest of something long" one pass instead of a sort.
+
 Not done, deliberately: the inline overflow guards in `kit_array_reserve`
 and in the integer parsers still stand on their own. Rewiring working code
 that aborts anyway would be churn for no behaviour a caller can see.
@@ -65,21 +76,7 @@ in-memory table keys, not integrity checks. There is no CRC32 and no
 SHA-256, so nothing in the header can verify a download or a file's
 identity.
 
-**Circular buffer.** No ring buffer type, so a bounded log, a
-producer/consumer queue or a windowed average has to be written from
-scratch by whoever needs one.
-
-**Heap / priority queue.** No binary heap over an array, so a priority
-queue built on the existing dynamic-array macros needs its own sift-up and
-sift-down.
-
 ### Partially developed
-
-**Arrays have no sort.** `kit_array_push`, `_pop`, `_find`, `_contains` and
-`_each` cover growth, removal and linear search, but there is no
-`kit_array_sort`. `qsort` is already linked in and used internally by
-`kit_fs_list`; only the wrapper that infers the comparator and element size
-is missing.
 
 **Maths is geometry and interpolation only.** `kit_clampf`/`_d`/`_i`,
 `kit_lerpf` and `kit_remapf` cover the vector-maths use case the section
