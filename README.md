@@ -48,6 +48,8 @@ new one.
 | Map | `kit_map` | String keys, open addressing |
 | Paths | `kit_path` | `basename`, `dirname`, `join`, all bounded |
 | Arithmetic | `kit_num` | Addition, subtraction and multiplication that refuse to wrap |
+| Formatting | `kit_fmt` | Sizes and durations a person reads at a glance |
+| Hex dump | `kit_hex_dump` | Bytes and their text, laid out like `hexdump -C` |
 
 Each module is documented where it is declared. Read the header.
 
@@ -175,7 +177,7 @@ under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 
 ## Examples
 
-Seven programs under `examples/`, each one a small tool rather than a tour of
+Eight programs under `examples/`, each one a small tool rather than a tour of
 the API. Between them they use every public name in the header, which
 `make check-examples` enforces: add a function without showing it anywhere and
 the build stops.
@@ -189,11 +191,12 @@ the build stops.
 | `runner.c` | Reports on other programs and runs them | commands, processes, captured output |
 | `tree.c` | Walks a directory and measures it | filesystem, paths, scratch, timer |
 | `wordfreq.c` | Counts words in a text | string views, map, arrays, buffers, hashing |
-| `cli.c` | Option parsing on its own | command line |
+| `peek.c` | Says what a file is and shows its bytes | option parsing, file kinds, readable sizes, hex dump |
 
 ```sh
 make examples
 ./examples/config examples/demo/app.conf --list
+./examples/peek -n 32 examples/demo/app.conf
 ./examples/wordfreq --top 5 examples/demo/prose.txt
 ./examples/tree --depth 2 examples
 ./examples/runner --check cc make git

@@ -89,6 +89,65 @@ TEST(duration_pads_the_smaller_unit) {
     CHECK_STR(duration_of(86400.0), "1d 00h");
 }
 
+/* The dump goes to a stream, so it is read back from one: a temporary file,
+ * which is the only spelling both POSIX and Windows agree on. */
+static const char *dumped(const void *data, size_t size, uint64_t start) {
+    static char text[2048];
+    text[0] = '\0';
+
+    FILE *tmp = tmpfile();
+    if (!tmp) return text;
+
+    kit_hex_dump(tmp, data, size, start);
+    rewind(tmp);
+    size_t n = fread(text, 1, sizeof text - 1, tmp);
+    text[n] = '\0';
+    fclose(tmp);
+    return text;
+}
+
+TEST(hex_dump_lays_out_sixteen_bytes_a_line) {
+    const char *line = "kit.h - a single-header toolkit";
+
+    CHECK_STR(dumped(line, 16, 0),
+              "00000000  6b 69 74 2e 68 20 2d 20  61 20 73 69 6e 67 6c 65  "
+              "|kit.h - a single|\n");
+}
+
+/* The text column stops at the real end, and the hex column is padded so that
+ * the bar opening it stays in the same place on every line, which is the only
+ * reason the padding exists. */
+TEST(hex_dump_pads_a_partial_last_line) {
+    char full[128];
+    snprintf(full, sizeof full, "%s", dumped("0123456789abcdef", 16, 0));
+    const char *partial = dumped("abc", 3, 0);
+
+    const char *bar_full    = strchr(full, '|');
+    const char *bar_partial = strchr(partial, '|');
+    if (!CHECK(bar_full && bar_partial)) return;
+
+    CHECK_INT(bar_partial - partial, bar_full - full);
+    CHECK(strstr(partial, "  61 62 63 ") != NULL);
+    CHECK(strstr(partial, "|abc|\n") != NULL);
+}
+
+TEST(hex_dump_labels_the_lines_with_the_offset_it_was_given) {
+    const char *text = dumped("0123456789abcdefghij", 20, 0x1000);
+    CHECK(strstr(text, "00001000 ") != NULL);
+    CHECK(strstr(text, "00001010 ") != NULL);
+    CHECK(strstr(text, "|ghij|") != NULL);
+}
+
+TEST(hex_dump_shows_a_dot_for_what_cannot_be_printed) {
+    const unsigned char raw[] = { 0x00, 0x1f, 'A', 0x7f, 0x80, 0xff };
+    CHECK(strstr(dumped(raw, sizeof raw, 0), "|..A...|") != NULL);
+}
+
+TEST(hex_dump_writes_nothing_when_there_is_nothing_to_write) {
+    CHECK_STR(dumped("abc", 0, 0), "");
+    CHECK_STR(dumped(NULL, 16, 0), "");
+}
+
 int main(void) {
     kit_log_set_level(KIT_LOG_CRITICAL);
     utest_begin("format");
@@ -101,5 +160,10 @@ int main(void) {
     RUN(duration_keeps_the_unit_a_reader_expects);
     RUN(duration_carries_a_value_that_rounding_would_fill);
     RUN(duration_pads_the_smaller_unit);
+    RUN(hex_dump_lays_out_sixteen_bytes_a_line);
+    RUN(hex_dump_pads_a_partial_last_line);
+    RUN(hex_dump_labels_the_lines_with_the_offset_it_was_given);
+    RUN(hex_dump_shows_a_dot_for_what_cannot_be_printed);
+    RUN(hex_dump_writes_nothing_when_there_is_nothing_to_write);
     return utest_report();
 }

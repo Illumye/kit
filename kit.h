@@ -40,6 +40,7 @@
  *   15. Maths        kit_clampf, kit_lerpf, kit_remapf, KIT_MIN, KIT_MAX
  *   16. Arithmetic   kit_num_add, kit_num_sub, kit_num_mul
  *   17. Formatting   kit_fmt_size, kit_fmt_duration
+ *   18. Hex dump     kit_hex_dump
  *
  * REQUIREMENTS:
  *   C11 or later. On POSIX systems the implementation uses clock_gettime(),
@@ -1586,6 +1587,26 @@ extern "C" {
 
 char *kit_fmt_size(char *buf, size_t bufsz, uint64_t bytes);
 char *kit_fmt_duration(char *buf, size_t bufsz, double seconds);
+
+/* --------------------------------------------------------------------------
+ * SECTION 18 : HEX DUMP
+ *
+ * Bytes, as sixteen to a line with their text alongside, which is how a
+ * header, a protocol frame or a file that is not what it claims to be gets
+ * read.
+ *
+ *   kit_hex_dump(stdout, data, size, 0);
+ *
+ *   00000000  6b 69 74 2e 68 20 2d 20  61 20 73 69 6e 67 6c 65  |kit.h - a single|
+ *   00000010  2d 68 65 61 64 65 72 0a                           |-header.|
+ *
+ * `start` is the offset the first line is labelled with, so a dump of the
+ * middle of a file still says where in the file it is. The whole dump is
+ * written under one lock on the stream, so a logging thread cannot land a
+ * line in the middle of it.
+ * -------------------------------------------------------------------------- */
+
+void kit_hex_dump(FILE *out, const void *data, size_t size, uint64_t start);
 
 #ifdef __cplusplus
 }   /* extern "C" */
@@ -3994,6 +4015,41 @@ char *kit_fmt_duration(char *buf, size_t bufsz, double seconds) {
     else
         snprintf(buf, bufsz, "%lldd %02lldh", total / 86400, (total % 86400) / 3600);
     return buf;
+}
+
+/* --------------------------------------------------------------------------
+ * Hex dump
+ * -------------------------------------------------------------------------- */
+
+void kit_hex_dump(FILE *out, const void *data, size_t size, uint64_t start) {
+    const unsigned char *bytes = (const unsigned char *)data;
+    if (!out || !bytes || size == 0) return;
+
+    kit__stream_lock(out);
+    for (size_t offset = 0; offset < size; offset += 16) {
+        size_t run = size - offset < 16 ? size - offset : 16;
+
+        fprintf(out, "%08llx ", (unsigned long long)(start + offset));
+
+        for (size_t i = 0; i < 16; i++) {
+            /* The gap after the eighth column is what lets an eye land on a
+             * given byte without counting from the left. */
+            if (i % 8 == 0) fputc(' ', out);
+            if (i < run) fprintf(out, "%02x ", bytes[offset + i]);
+            else         fputs("   ", out);
+        }
+
+        /* Two spaces before the text column, one gap of the same width as
+         * the one between the two halves: the layout is hexdump -C's, so
+         * that its output and this one can be put side by side. */
+        fputs(" |", out);
+        for (size_t i = 0; i < run; i++) {
+            unsigned char c = bytes[offset + i];
+            fputc(c >= 0x20 && c < 0x7f ? (int)c : '.', out);
+        }
+        fputs("|\n", out);
+    }
+    kit__stream_unlock(out);
 }
 
 #endif /* KIT_IMPLEMENTATION && !KIT__IMPLEMENTATION_DONE */

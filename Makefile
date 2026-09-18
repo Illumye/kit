@@ -155,7 +155,10 @@ check-examples: $(EXAMPLE_BIN)
 	@touch examples/demo/greet.h
 	@./examples/build    2>&1 | grep -q '2 file(s) compiled'
 	@./examples/build --clean > /dev/null 2>&1
-	@./examples/cli --help > /dev/null
+	@./examples/peek --help > /dev/null
+	@./examples/peek examples/demo/app.conf | grep -q '|# The server the|'
+	@./examples/peek -n16 -o=16 examples/demo/prose.txt | grep -q '^00000010'
+	@./examples/peek examples/demo 2>&1 | grep -q 'is a directory'
 	@./examples/config examples/demo/app.conf | grep -q '^port        8080'
 	@./examples/config examples/demo/app.conf --list | grep -q 'paths.log'
 	@./examples/config examples/demo/broken.conf 2>&1 | grep -q 'expected a whole number'
