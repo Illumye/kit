@@ -50,6 +50,7 @@ new one.
 | Arithmetic | `kit_num` | Addition, subtraction and multiplication that refuse to wrap |
 | Formatting | `kit_fmt` | Sizes and durations a person reads at a glance |
 | Hex dump | `kit_hex_dump` | Bytes and their text, laid out like `hexdump -C` |
+| Random | `kit_random`, `KitRandom` | Reproducible xoshiro256**, with an unbiased range |
 
 Each module is documented where it is declared. Read the header.
 
@@ -171,7 +172,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 125 tests over nine files, and the header compiles warning-free
+The suite is 147 tests over eleven files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 

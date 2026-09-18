@@ -162,8 +162,16 @@ int main(int argc, char **argv) {
     }
     KIT_INFO("about %d bytes to write, rotating every %d", planned, limit);
 
+    /* Real log lines carry an identifier that ties a request to everything it
+     * touched, and a raw 64-bit draw is exactly that: wide enough that two
+     * never collide, cheap enough to mint one per line. Seeded from the clock
+     * so that two runs of this program do not produce the same ones. */
+    KitRandom rng = kit_random_seed((uint64_t)time(NULL));
+
     for (int i = 0; i < lines; i++) {
-        const char *line = kit_scratch_printf("%04d  the quick brown fox jumps over the lazy dog", i);
+        const char *line = kit_scratch_printf(
+            "%04d  req=%016llx  the quick brown fox jumps over the lazy dog",
+            i, (unsigned long long)kit_random_u64(&rng));
         if (!append_line(&journal, line, &err)) {
             kit_error_context(&err, "writing the journal in %s", directory);
             KIT_ERROR("%s (%s)", err.message, kit_error_code_name(err.code));

@@ -33,11 +33,12 @@ static KitVec2 pull(KitVec2 position, float strength) {
 int main(int argc, char **argv) {
     const char *prog = kit_cli_shift(&argc, &argv);
 
-    int  count = 3, steps = 120;
+    int  count = 3, steps = 120, seed = 1;
     bool help  = false;
     KitCliOpt opts[] = {
         KIT_CLI_INT ('b', "bodies", "N", "How many bodies",     &count),
         KIT_CLI_INT ('s', "steps",  "N", "How many steps",      &steps),
+        KIT_CLI_INT ('S', "seed",   "N", "Which configuration", &seed),
         KIT_CLI_FLAG('h', "help",   "Show this help",           &help),
     };
     if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) return 1;
@@ -57,19 +58,31 @@ int main(int argc, char **argv) {
     KitArenaMark before_trail = kit_arena_mark(&arena);
     KitVec2     *trail = (KitVec2 *)kit_arena_alloc_aligned(&arena, sizeof(KitVec2) * (size_t)count, 32);
 
+    /* Perfectly regular starting points make every body behave the same way,
+     * which hides exactly the behaviour worth watching. The jitter below is
+     * random but reproducible: --seed picks the configuration, and the same
+     * one comes back on any machine. */
+    KitRandom rng = kit_random_seed((uint64_t)seed);
+
     for (int i = 0; i < count; i++) {
         /* Spread the bodies over a circle, and colour them along the way. */
-        float t     = (float)i / (float)count;
-        float angle = KIT_DEG2RAD(t * 360.0f);
-        float reach = kit_remapf(t, 0.0f, 1.0f, 4.0f, 12.0f);
+        float t      = (float)i / (float)count;
+        float wobble = (float)kit_random_double(&rng) - 0.5f;
+        float angle  = KIT_DEG2RAD(t * 360.0f + wobble * 40.0f);
+        float reach  = kit_remapf(t, 0.0f, 1.0f, 4.0f, 12.0f)
+                     + (float)kit_random_double(&rng) * 2.0f;
 
         bodies[i].position = KIT_VEC2(cosf(angle) * reach, sinf(angle) * reach);
         /* Perpendicular to the radius, which is roughly a circular orbit. */
         bodies[i].velocity = kit_vec2_scale(KIT_VEC2(-sinf(angle), cosf(angle)),
                                             kit_lerpf(1.2f, 0.4f, t));
         bodies[i].colour   = kit_vec3_norm(KIT_VEC3(t, 1.0f - t, 0.5f));
-        bodies[i].mass     = kit_lerpf(1.0f, 4.0f, t);
+        /* Whole units of mass, drawn from a range: kit_random_between covers
+         * both ends evenly, which a modulo of a raw draw would not. */
+        bodies[i].mass     = (float)kit_random_between(&rng, 1, 4);
     }
+
+    KIT_INFO("configuration %d, reproduce it with --seed %d", seed, seed);
 
     /* The bounds of the run, tracked as the simulation goes. */
     float closest = 1.0e30f, farthest = 0.0f;

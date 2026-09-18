@@ -41,6 +41,7 @@
  *   16. Arithmetic   kit_num_add, kit_num_sub, kit_num_mul
  *   17. Formatting   kit_fmt_size, kit_fmt_duration
  *   18. Hex dump     kit_hex_dump
+ *   19. Random       kit_random_*, KitRandom
  *
  * REQUIREMENTS:
  *   C11 or later. On POSIX systems the implementation uses clock_gettime(),
@@ -1607,6 +1608,49 @@ char *kit_fmt_duration(char *buf, size_t bufsz, double seconds);
  * -------------------------------------------------------------------------- */
 
 void kit_hex_dump(FILE *out, const void *data, size_t size, uint64_t start);
+
+/* --------------------------------------------------------------------------
+ * SECTION 19 : RANDOM NUMBERS
+ *
+ * xoshiro256**, which is small, fast and passes the statistical batteries.
+ * Not for anything that has to stay secret: it is a generator for sampling,
+ * jitter, shuffling and synthetic data, and its state can be recovered from
+ * its output.
+ *
+ *   KitRandom rng = kit_random_seed(1234);
+ *   double    t   = kit_random_double(&rng);        // [0, 1)
+ *   int64_t   die = kit_random_between(&rng, 1, 6); // both ends included
+ *
+ * The same seed gives the same sequence on every platform, which is what
+ * makes a run that used random data reproducible: print the seed, take it
+ * back as an option, and the run comes out the same. A program that wants a
+ * different sequence each time seeds from the clock, kit_random_seed((uint64_t)time(NULL)).
+ *
+ * Like every other type here, a zeroed KitRandom works: rather than return
+ * zeros for ever, which is what this generator does when its whole state is
+ * zero, it is the default sequence.
+ *
+ * kit_random_between is not `kit_random_u64() % n`. That expression favours
+ * the low end of the range whenever n does not divide 2^64, which for a
+ * six-sided die is a bias no player would accept; this one draws again on
+ * the values that would skew it.
+ * -------------------------------------------------------------------------- */
+
+typedef struct {
+    uint64_t state[4];
+} KitRandom;
+
+KitRandom kit_random_seed(uint64_t seed);
+
+uint64_t kit_random_u64(KitRandom *r);
+
+/* Evenly spread over [0, 1), never reaching 1, with the 53 bits of precision
+ * a double has to give. */
+double kit_random_double(KitRandom *r);
+
+/* Uniform over [lo, hi], both included. The bounds may be given in either
+ * order. */
+int64_t kit_random_between(KitRandom *r, int64_t lo, int64_t hi);
 
 #ifdef __cplusplus
 }   /* extern "C" */
@@ -4050,6 +4094,97 @@ void kit_hex_dump(FILE *out, const void *data, size_t size, uint64_t start) {
         fputs("|\n", out);
     }
     kit__stream_unlock(out);
+}
+
+/* --------------------------------------------------------------------------
+ * Random numbers
+ * -------------------------------------------------------------------------- */
+
+/* The sequence a zeroed generator produces. Any value whose bits are not all
+ * the same would do; this one is the golden ratio's, as splitmix64 uses. */
+#define KIT__RANDOM_DEFAULT_SEED 0x9e3779b97f4a7c15ull
+
+/* splitmix64, to turn one number into four that are not visibly related.
+ * Seeding xoshiro's four words from a counter directly makes its first
+ * outputs walk in step with the seed, so seeds 1 and 2 would start alike. */
+static uint64_t kit__splitmix64(uint64_t *state) {
+    uint64_t z = (*state += 0x9e3779b97f4a7c15ull);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+    return z ^ (z >> 31);
+}
+
+static uint64_t kit__rotl64(uint64_t x, int k) {
+    return (x << k) | (x >> (64 - k));
+}
+
+KitRandom kit_random_seed(uint64_t seed) {
+    KitRandom r;
+    uint64_t  s = seed;
+    for (size_t i = 0; i < 4; i++) r.state[i] = kit__splitmix64(&s);
+    return r;
+}
+
+uint64_t kit_random_u64(KitRandom *r) {
+    uint64_t *s = r->state;
+
+    /* All zeros is the one state this generator cannot leave, and a zeroed
+     * struct is how every other type here starts, so it is seeded instead. */
+    if ((s[0] | s[1] | s[2] | s[3]) == 0) {
+        *r = kit_random_seed(KIT__RANDOM_DEFAULT_SEED);
+    }
+
+    uint64_t result = kit__rotl64(s[1] * 5, 7) * 9;
+    uint64_t t      = s[1] << 17;
+
+    s[2] ^= s[0];
+    s[3] ^= s[1];
+    s[1] ^= s[2];
+    s[0] ^= s[3];
+    s[2] ^= t;
+    s[3] = kit__rotl64(s[3], 45);
+
+    return result;
+}
+
+double kit_random_double(KitRandom *r) {
+    /* The top 53 bits, which is what a double can hold exactly. Scaling the
+     * whole 64 would round some values up to 1.0. */
+    return (double)(kit_random_u64(r) >> 11) * (1.0 / 9007199254740992.0);
+}
+
+int64_t kit_random_between(KitRandom *r, int64_t lo, int64_t hi) {
+    if (lo > hi) {
+        int64_t swap = lo;
+        lo = hi;
+        hi = swap;
+    }
+
+    /* Unsigned throughout: hi - lo overflows a signed 64-bit value as soon as
+     * the range spans zero widely, and the span of the whole type is one more
+     * than it can hold, which is why zero means exactly that. */
+    uint64_t span = (uint64_t)hi - (uint64_t)lo + 1u;
+    uint64_t draw;
+
+    if (span == 0) {
+        draw = kit_random_u64(r);
+    } else {
+        /* Everything from this value up would map onto a partial run of the
+         * range and favour its start, so it is drawn again instead. */
+        uint64_t reject_from = UINT64_MAX - (UINT64_MAX % span);
+        do {
+            draw = kit_random_u64(r);
+        } while (draw >= reject_from);
+        draw %= span;
+    }
+
+    uint64_t value = (uint64_t)lo + draw;
+
+    /* Back to signed the long way: converting a value above INT64_MAX is
+     * implementation-defined, and this is the same arithmetic without it. */
+    if (value > (uint64_t)INT64_MAX)
+        return (int64_t)(value - (uint64_t)INT64_MAX - 1u) + INT64_MIN;
+    return (int64_t)value;
 }
 
 #endif /* KIT_IMPLEMENTATION && !KIT__IMPLEMENTATION_DONE */
