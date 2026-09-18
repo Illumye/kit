@@ -1,11 +1,21 @@
 /*
  * A build tool in one file, using nothing but kit.h.
  *
- * It compiles examples/demo into an executable, skipping any step whose
- * output is already newer than its inputs, and rebuilding it when a header
- * changes. This is the integration test the unit suites cannot be: it puts
- * the option parser, the filesystem layer, the temporary allocator, the
- * command runner and the logger to work together.
+ * It compiles examples/demo into an executable and skips the work it can.
+ * This is the integration test the unit suites cannot be: it puts the option
+ * parser, the filesystem layer, the temporary allocator, the command runner
+ * and the logger to work together.
+ *
+ * What makes an object out of date is decided on content rather than on
+ * timestamps: each one carries the SHA-256 of the source and headers it was
+ * made from, so touching a file, or writing it again with the same bytes,
+ * costs nothing, and a file that really changed always rebuilds. Only the
+ * last fingerprint is kept, so undoing a change does rebuild: a program that
+ * answered that one for free would be a cache keyed by digest, which is a
+ * different program and a directory that has to be swept. The
+ * link step still goes by modification time, which is the right tool there:
+ * the objects it reads are this program's own output, and nothing else can
+ * have rewritten them with the same bytes.
  *
  * Failures travel up as a KitError. Each layer adds what it was doing, and
  * main reports the whole chain once, so a failure reads as a sentence. With a
@@ -62,20 +72,66 @@ static char *object_for(const char *source) {
     return kit_scratch_printf("%s/%.*s.o", BUILD_DIR, KIT_STR_ARG(stem));
 }
 
-static bool compile(char *source, const char *object,
-                    const KitFileList *headers, size_t *compiled, KitError *err) {
-    /* The object depends on its source and on every header. */
+/* One file into the digest. The path goes in with it, terminator included, so
+ * that moving a character from the end of one file to the start of the next
+ * cannot leave the fingerprint unchanged. */
+static bool feed(KitSha256 *hash, const char *path, KitError *err) {
+    size_t size = 0;
+    char  *text = kit_fs_read_sized(path, &size, err);
+    if (!text) return false;
+
+    kit_sha256_update(hash, path, strlen(path) + 1);
+    kit_sha256_update(hash, text, size);
+    free(text);
+    return true;
+}
+
+/* What went into one object: its source, then every header, in the order the
+ * listing gives them. Two builds agree on this only if the bytes agree, which
+ * is the difference between asking "has this file changed" and asking "has
+ * anyone touched this file". */
+static bool fingerprint(char *source, const KitFileList *headers,
+                        char hex[KIT_SHA256_HEX_CAPACITY], KitError *err) {
+    /* Everything this object is made of, in one list: the source, then the
+     * headers appended in a single call. The list owns none of the paths, so
+     * freeing it releases the array and nothing else. */
     KitFileList inputs = {0};
     kit_array_push(&inputs, source);
     kit_array_push_many(&inputs, headers->items, headers->count);
 
-    int stale = kit_fs_stale_list(object, &inputs, err);
-    kit_array_free(&inputs);
+    KitSha256 hash;
+    kit_sha256_init(&hash);
 
-    if (stale < 0) return kit_error_context(err, "checking whether %s is up to date", object);
-    if (stale == 0) {
-        KIT_DEBUG("up to date: %s", object);
-        return true;
+    bool ok = true;
+    for (size_t i = 0; i < inputs.count && ok; ++i)
+        ok = feed(&hash, inputs.items[i], err);
+
+    kit_array_free(&inputs);
+    if (!ok) return false;
+
+    unsigned char digest[KIT_SHA256_SIZE];
+    kit_sha256_final(&hash, digest);
+    kit_sha256_hex(digest, hex, KIT_SHA256_HEX_CAPACITY);
+    return true;
+}
+
+static bool compile(char *source, const char *object,
+                    const KitFileList *headers, size_t *compiled, KitError *err) {
+    char want[KIT_SHA256_HEX_CAPACITY];
+    if (!fingerprint(source, headers, want, err))
+        return kit_error_context(err, "fingerprinting %s", kit_path_basename(source));
+
+    /* The fingerprint of the inputs that produced this object, kept beside
+     * it. Missing, unreadable or different: the compiler runs. */
+    const char *stamp = kit_scratch_printf("%s.sha", object);
+    if (kit_fs_is_file(object) && kit_fs_is_file(stamp)) {
+        char *before = kit_fs_read(stamp, NULL);
+        bool  same   = before != NULL && strcmp(before, want) == 0;
+        free(before);
+        if (same) {
+            KIT_DEBUG("unchanged: %s", object);
+            return true;
+        }
     }
 
     KitCommand cmd = {0};
@@ -85,6 +141,12 @@ static bool compile(char *source, const char *object,
     kit_command_free(&cmd);
 
     if (!ok) return false;
+
+    /* Written only once the compiler has succeeded. A fingerprint recorded
+     * for an object that was never produced would skip the next build too. */
+    if (!kit_fs_write(stamp, want, strlen(want), err))
+        return kit_error_context(err, "recording the fingerprint of %s", object);
+
     (*compiled)++;
     return true;
 }

@@ -63,11 +63,12 @@ int main(int argc, char **argv) {
     const char *prog = kit_cli_shift(&argc, &argv);
 
     int  bytes = 64, offset = 0;
-    bool all = false, quiet = false, help = false;
+    bool all = false, quiet = false, sums = false, help = false;
     KitCliOpt opts[] = {
         KIT_CLI_INT ('n', "bytes",  "N", "How many bytes to show", &bytes),
         KIT_CLI_INT ('o', "offset", "N", "Where to start",         &offset),
         KIT_CLI_FLAG('a', "all",    "Show the whole file",         &all),
+        KIT_CLI_FLAG('s', "sums",   "Checksum it as well",         &sums),
         KIT_CLI_FLAG('q', "quiet",  "The dump on its own",         &quiet),
         KIT_CLI_FLAG('h', "help",   "Show this help",              &help),
     };
@@ -117,6 +118,19 @@ int main(int argc, char **argv) {
                kit_fmt_size(readable, sizeof readable, (uint64_t)size),
                looks_like(raw, size));
         if (when > 0) printf("  last changed %s\n", modified_at(when));
+    }
+
+    /* Two answers to "is this the same file as the one I meant". The CRC is
+     * what a download or an archive carries, and costs a pass over the bytes;
+     * the digest is what identifies content when someone might be trying to
+     * fool you, and costs rather more. */
+    if (sums) {
+        unsigned char digest[KIT_SHA256_SIZE];
+        char          hex[KIT_SHA256_HEX_CAPACITY];
+
+        printf("  crc32   %08x\n", kit_crc32(0, raw, size));
+        kit_sha256(raw, size, digest);
+        printf("  sha256  %s\n", kit_sha256_hex(digest, hex, sizeof hex));
     }
 
     /* A window into the file: where it starts and how far it runs, both

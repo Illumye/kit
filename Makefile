@@ -153,12 +153,20 @@ check-examples: $(EXAMPLE_BIN)
 	@./examples/build -r 2>&1 | grep -q 'hello, world'
 	@./examples/build    2>&1 | grep -q '0 file(s) compiled'
 	@touch examples/demo/greet.h
-	@./examples/build    2>&1 | grep -q '2 file(s) compiled'
+	@./examples/build    2>&1 | grep -q '0 file(s) compiled'
+# A real change to the same header does rebuild. The copy is put back
+# whatever happens, so a failing check never leaves the source modified.
+	@cp examples/demo/greet.h build/greet.h.kept
+	@printf '/* changed by check-examples */\n' >> examples/demo/greet.h
+	@./examples/build 2>&1 | grep -q '2 file(s) compiled'; rc=$$?; \
+	 cp build/greet.h.kept examples/demo/greet.h; rm -f build/greet.h.kept; \
+	 exit $$rc
 	@./examples/build --clean > /dev/null 2>&1
 	@./examples/peek --help > /dev/null
 	@./examples/peek examples/demo/app.conf | grep -q '|# The server the|'
 	@./examples/peek -n16 -o=16 examples/demo/prose.txt | grep -q '^00000010'
 	@./examples/peek examples/demo 2>&1 | grep -q 'is a directory'
+	@./examples/peek --sums -n 0 examples/demo/app.conf | grep -q 'sha256  d2cadd9db49147506d8da0521ffb5fef87ddff5502ccadf4a6b500de42fea872'
 	@./examples/config examples/demo/app.conf | grep -q '^port        8080'
 	@./examples/config examples/demo/app.conf --list | grep -q 'paths.log'
 	@./examples/config examples/demo/broken.conf 2>&1 | grep -q 'expected a whole number'

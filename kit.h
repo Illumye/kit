@@ -45,6 +45,7 @@
  *   20. Benchmark    kit_bench_run, kit_bench_report
  *   21. Ring buffer  kit_ring_*
  *   22. Heap         kit_heap_push, kit_heap_pop
+ *   23. Checksums    kit_crc32, kit_sha256_*
  *
  * REQUIREMENTS:
  *   C11 or later. On POSIX systems the implementation uses clock_gettime(),
@@ -1853,6 +1854,72 @@ void kit__heap_sift_up(void *items, size_t count, size_t width,
 
 void kit__heap_take(void *items, size_t count, size_t width,
                     int (*compare)(const void *, const void *));
+
+/* --------------------------------------------------------------------------
+ * SECTION 23 : CHECKSUMS
+ *
+ * Is this the same data? Two answers, at two prices.
+ *
+ * kit_crc32 is the one in zip, gzip and PNG: cheap, thirty-two bits, and it
+ * catches the accidents, a truncated download or a flipped bit. It catches
+ * nothing deliberate, since a change that keeps the checksum takes seconds to
+ * construct.
+ *
+ *   uint32_t sum = kit_crc32(0, data, size);
+ *
+ * The seed is the running value, so a file too large to hold can be summed a
+ * chunk at a time by feeding the result back in. Starting at 0 gives the
+ * standard checksum, the number `gzip -l` and `crc32` print.
+ *
+ * kit_sha256 is the other answer: two hundred and fifty-six bits, and no way
+ * anyone knows of to produce the same digest for different data. It is what
+ * identifies content rather than merely checking it, which is how a build
+ * decides that a file it already compiled has not really changed.
+ *
+ *   unsigned char digest[KIT_SHA256_SIZE];
+ *   char          hex[KIT_SHA256_HEX_CAPACITY];
+ *   kit_sha256(data, size, digest);
+ *   puts(kit_sha256_hex(digest, hex, sizeof hex));
+ *
+ * Several pieces at once go through the three-step form, which is what makes
+ * "the fingerprint of this source and every header it sees" one digest:
+ *
+ *   KitSha256 hash;
+ *   kit_sha256_init(&hash);
+ *   kit_sha256_update(&hash, source, source_size);
+ *   kit_sha256_update(&hash, header, header_size);
+ *   kit_sha256_final(&hash, digest);
+ *
+ * Neither is a password hash. Passwords want a function that is deliberately
+ * slow, and both of these are as fast as their authors could make them.
+ * -------------------------------------------------------------------------- */
+
+uint32_t kit_crc32(uint32_t crc, const void *data, size_t size);
+
+#define KIT_SHA256_SIZE          32
+#define KIT_SHA256_HEX_CAPACITY  (KIT_SHA256_SIZE * 2 + 1)
+
+typedef struct {
+    uint32_t      state[8];
+    uint64_t      bytes;             /* how much has gone in, for the padding */
+    unsigned char pending[64];       /* the tail of an incomplete block       */
+    size_t        held;
+} KitSha256;
+
+void kit_sha256_init(KitSha256 *hash);
+void kit_sha256_update(KitSha256 *hash, const void *data, size_t size);
+
+/* Writes the digest and leaves the state spent: initialise it again to hash
+ * something else. */
+void kit_sha256_final(KitSha256 *hash, unsigned char digest[KIT_SHA256_SIZE]);
+
+/* The three steps in one call, for data that is already in memory. */
+void kit_sha256(const void *data, size_t size, unsigned char digest[KIT_SHA256_SIZE]);
+
+/* Lowercase hex, NUL-terminated, into a buffer of KIT_SHA256_HEX_CAPACITY.
+ * Returns buf, so it can be printed where it is produced. */
+char *kit_sha256_hex(const unsigned char digest[KIT_SHA256_SIZE],
+                     char *buf, size_t bufsz);
 
 #ifdef __cplusplus
 }   /* extern "C" */
@@ -4498,6 +4565,191 @@ void kit__heap_take(void *items, size_t count, size_t width,
                        KIT__HEAP_AT(items, parent, width), width);
         parent = first;
     }
+}
+
+/* --------------------------------------------------------------------------
+ * Checksums
+ * -------------------------------------------------------------------------- */
+
+/* Four bits at a time, against the reflected CRC-32 polynomial. The usual
+ * table is 256 entries for twice the speed, which is a kilobyte of data in
+ * every binary that includes this header; sixteen entries is the trade a file
+ * meant to be copied into other projects should make. */
+static const uint32_t KIT__CRC32_NIBBLE[16] = {
+    0x00000000u, 0x1db71064u, 0x3b6e20c8u, 0x26d930acu,
+    0x76dc4190u, 0x6b6b51f4u, 0x4db26158u, 0x5005713cu,
+    0xedb88320u, 0xf00f9344u, 0xd6d6a3e8u, 0xcb61b38cu,
+    0x9b64c2b0u, 0x86d3d2d4u, 0xa00ae278u, 0xbdbdf21cu
+};
+
+uint32_t kit_crc32(uint32_t crc, const void *data, size_t size) {
+    const unsigned char *bytes = (const unsigned char *)data;
+    if (!bytes || size == 0) return crc;
+
+    /* Inverted while it runs and again at the end, which is what makes a
+     * leading run of zero bytes change the result. */
+    crc = ~crc;
+    for (size_t i = 0; i < size; i++) {
+        crc ^= bytes[i];
+        crc = (crc >> 4) ^ KIT__CRC32_NIBBLE[crc & 0x0fu];
+        crc = (crc >> 4) ^ KIT__CRC32_NIBBLE[crc & 0x0fu];
+    }
+    return ~crc;
+}
+
+/* The first thirty-two bits of the fractional parts of the cube roots of the
+ * first sixty-four primes, as FIPS 180-4 specifies them. */
+static const uint32_t KIT__SHA256_K[64] = {
+    0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
+    0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
+    0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
+    0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
+    0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
+    0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+    0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
+    0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
+    0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
+    0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
+    0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u,
+    0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+    0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
+    0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
+    0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
+    0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
+};
+
+#define KIT__ROTR32(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+
+static void kit__sha256_block(uint32_t state[8], const unsigned char block[64]) {
+    uint32_t w[64];
+
+    /* Big-endian, which is the order the standard defines and not the order
+     * any machine this runs on stores its integers in. */
+    for (size_t i = 0; i < 16; i++) {
+        w[i] = ((uint32_t)block[i * 4    ] << 24) |
+               ((uint32_t)block[i * 4 + 1] << 16) |
+               ((uint32_t)block[i * 4 + 2] <<  8) |
+               ((uint32_t)block[i * 4 + 3]);
+    }
+    for (size_t i = 16; i < 64; i++) {
+        uint32_t s0 = KIT__ROTR32(w[i - 15],  7) ^ KIT__ROTR32(w[i - 15], 18)
+                    ^ (w[i - 15] >> 3);
+        uint32_t s1 = KIT__ROTR32(w[i -  2], 17) ^ KIT__ROTR32(w[i -  2], 19)
+                    ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+
+    uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
+    uint32_t e = state[4], f = state[5], g = state[6], h = state[7];
+
+    for (size_t i = 0; i < 64; i++) {
+        uint32_t s1    = KIT__ROTR32(e, 6) ^ KIT__ROTR32(e, 11) ^ KIT__ROTR32(e, 25);
+        uint32_t chose = (e & f) ^ (~e & g);
+        uint32_t t1    = h + s1 + chose + KIT__SHA256_K[i] + w[i];
+        uint32_t s0    = KIT__ROTR32(a, 2) ^ KIT__ROTR32(a, 13) ^ KIT__ROTR32(a, 22);
+        uint32_t most  = (a & b) ^ (a & c) ^ (b & c);
+        uint32_t t2    = s0 + most;
+
+        h = g; g = f; f = e; e = d + t1;
+        d = c; c = b; b = a; a = t1 + t2;
+    }
+
+    state[0] += a; state[1] += b; state[2] += c; state[3] += d;
+    state[4] += e; state[5] += f; state[6] += g; state[7] += h;
+}
+
+void kit_sha256_init(KitSha256 *hash) {
+    if (!hash) return;
+
+    /* The fractional parts of the square roots of the first eight primes. */
+    hash->state[0] = 0x6a09e667u; hash->state[1] = 0xbb67ae85u;
+    hash->state[2] = 0x3c6ef372u; hash->state[3] = 0xa54ff53au;
+    hash->state[4] = 0x510e527fu; hash->state[5] = 0x9b05688cu;
+    hash->state[6] = 0x1f83d9abu; hash->state[7] = 0x5be0cd19u;
+    hash->bytes    = 0;
+    hash->held     = 0;
+    memset(hash->pending, 0, sizeof hash->pending);
+}
+
+void kit_sha256_update(KitSha256 *hash, const void *data, size_t size) {
+    const unsigned char *bytes = (const unsigned char *)data;
+    if (!hash || !bytes || size == 0) return;
+
+    hash->bytes += size;
+
+    /* Finish whatever the last call left behind before taking whole blocks
+     * straight from the caller's buffer. */
+    if (hash->held > 0) {
+        size_t room = sizeof hash->pending - hash->held;
+        size_t take = size < room ? size : room;
+        memcpy(hash->pending + hash->held, bytes, take);
+        hash->held += take;
+        bytes      += take;
+        size       -= take;
+
+        if (hash->held < sizeof hash->pending) return;
+        kit__sha256_block(hash->state, hash->pending);
+        hash->held = 0;
+    }
+
+    while (size >= 64) {
+        kit__sha256_block(hash->state, bytes);
+        bytes += 64;
+        size  -= 64;
+    }
+
+    if (size > 0) {
+        memcpy(hash->pending, bytes, size);
+        hash->held = size;
+    }
+}
+
+void kit_sha256_final(KitSha256 *hash, unsigned char digest[KIT_SHA256_SIZE]) {
+    if (!hash || !digest) return;
+
+    /* A one bit, zeros, and the length in bits as a big-endian 64-bit count:
+     * the padding is what makes "abc" and "abc\0" different digests. */
+    uint64_t bits = hash->bytes * 8u;
+
+    hash->pending[hash->held++] = 0x80u;
+    if (hash->held > 56) {
+        memset(hash->pending + hash->held, 0, sizeof hash->pending - hash->held);
+        kit__sha256_block(hash->state, hash->pending);
+        hash->held = 0;
+    }
+    memset(hash->pending + hash->held, 0, 56 - hash->held);
+
+    for (size_t i = 0; i < 8; i++)
+        hash->pending[56 + i] = (unsigned char)((bits >> (56 - i * 8)) & 0xffu);
+    kit__sha256_block(hash->state, hash->pending);
+
+    for (size_t i = 0; i < 8; i++) {
+        digest[i * 4    ] = (unsigned char)((hash->state[i] >> 24) & 0xffu);
+        digest[i * 4 + 1] = (unsigned char)((hash->state[i] >> 16) & 0xffu);
+        digest[i * 4 + 2] = (unsigned char)((hash->state[i] >>  8) & 0xffu);
+        digest[i * 4 + 3] = (unsigned char)( hash->state[i]        & 0xffu);
+    }
+}
+
+void kit_sha256(const void *data, size_t size, unsigned char digest[KIT_SHA256_SIZE]) {
+    KitSha256 hash;
+    kit_sha256_init(&hash);
+    kit_sha256_update(&hash, data, size);
+    kit_sha256_final(&hash, digest);
+}
+
+char *kit_sha256_hex(const unsigned char digest[KIT_SHA256_SIZE],
+                     char *buf, size_t bufsz) {
+    static const char figures[] = "0123456789abcdef";
+    if (!buf || bufsz == 0) return buf;
+
+    size_t written = 0;
+    for (size_t i = 0; i < KIT_SHA256_SIZE && written + 2 < bufsz; i++) {
+        buf[written++] = figures[(digest[i] >> 4) & 0x0fu];
+        buf[written++] = figures[ digest[i]       & 0x0fu];
+    }
+    buf[written] = '\0';
+    return buf;
 }
 
 #endif /* KIT_IMPLEMENTATION && !KIT__IMPLEMENTATION_DONE */

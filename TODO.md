@@ -11,7 +11,7 @@ section below; the rest of this file is the earlier audit and stands as is.
 ## Feature gaps (audit of 2026-09-18)
 
 Development is going through these in five phases, in the order below.
-Phases 1, 2 and 3 are done.
+Phases 1 to 4 are done.
 
 ### Done since the audit
 
@@ -56,6 +56,13 @@ drop: the oldest going out of the front is the point.
 macros and ordered by a `qsort` comparator. Only `items[0]` is ordered, which
 is what makes "the N largest of something long" one pass instead of a sort.
 
+**Checksums.** `kit_crc32` and the `kit_sha256_*` family, section 23, both
+agreeing byte for byte with `gzip` and `sha256sum`. CRC-32 goes four bits at
+a time from a sixteen-entry table: the usual table is twice as fast and a
+kilobyte of data in every binary that includes the header, which is the wrong
+trade for a file meant to be copied around. `build.c` decides on content
+rather than on timestamps because of them.
+
 Not done, deliberately: the inline overflow guards in `kit_array_reserve`
 and in the integer parsers still stand on their own. Rewiring working code
 that aborts anyway would be churn for no behaviour a caller can see.
@@ -70,11 +77,6 @@ validates or iterates codepoints.
 
 **Glob matching.** `kit_fs_list` lists a directory's entries but nothing
 filters them against a pattern such as `*.c` or `test_*.o`.
-
-**Checksums.** `kit_hash_str`/`kit_hash_bytes` are djb2, fast and meant for
-in-memory table keys, not integrity checks. There is no CRC32 and no
-SHA-256, so nothing in the header can verify a download or a file's
-identity.
 
 ### Partially developed
 
