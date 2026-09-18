@@ -45,6 +45,12 @@ static const char *modified_at(int64_t seconds) {
     return stamp;
 }
 
+static bool has_nul(const unsigned char *data, size_t size) {
+    for (size_t i = 0; i < size; i++)
+        if (data[i] == 0) return true;
+    return false;
+}
+
 /* The first bytes say more about a file than its extension does. */
 static const char *looks_like(const unsigned char *data, size_t size) {
     if (size >= 4 && memcmp(data, "\x7f" "ELF", 4) == 0)  return "an ELF binary";
@@ -53,8 +59,7 @@ static const char *looks_like(const unsigned char *data, size_t size) {
     if (size >= 2 && data[0] == '#' && data[1] == '!')    return "a script";
     if (size >= 3 && memcmp(data, "\xef\xbb\xbf", 3) == 0) return "text with a byte order mark";
 
-    for (size_t i = 0; i < size; i++)
-        if (data[i] == 0) return "binary: it has a NUL byte in it";
+    if (has_nul(data, size)) return "binary: it has a NUL byte in it";
 
     return "text";
 }
@@ -118,6 +123,19 @@ int main(int argc, char **argv) {
                kit_fmt_size(readable, sizeof readable, (uint64_t)size),
                looks_like(raw, size));
         if (when > 0) printf("  last changed %s\n", modified_at(when));
+
+        /* For something that reads as text, how many characters it holds is
+         * not how many bytes it holds, and a single byte in the wrong place
+         * is the difference between a file an editor opens and one it
+         * refuses. Asked only of text, since a PNG is not expected to be
+         * anything else. */
+        if (size > 0 && !has_nul(raw, size)) {
+            KitStr whole = kit_str_from_parts(data, size);
+            if (kit_utf8_valid(whole))
+                printf("  %zu characters, valid UTF-8\n", kit_utf8_count(whole));
+            else
+                printf("  not valid UTF-8: a byte here belongs to no character\n");
+        }
     }
 
     /* Two answers to "is this the same file as the one I meant". The CRC is

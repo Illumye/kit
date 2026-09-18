@@ -50,17 +50,40 @@ static void print_entry(const KitMapEntry *entry, size_t rank) {
     printf("  %2zu. %-16s %08x\n", rank, entry->key, kit_hash_str(entry->key));
 }
 
-/* Letters and apostrophes make a word; everything else separates them. */
-static bool is_word_byte(char c) {
-    unsigned char u = (unsigned char)c;
-    return isalpha(u) || c == '\'';
+/* Letters and apostrophes make a word; everything else separates them.
+ *
+ * Above ASCII it is a guess, since deciding properly needs the Unicode tables
+ * and those are bigger than the library. Everything up there counts as a
+ * letter except the two ranges that plainly are not: Latin-1 punctuation and
+ * symbols, and general punctuation, which is where the dashes and the
+ * typographic quotes live. Without that exclusion an em dash glues the words
+ * on either side of it into one. */
+static bool is_word_codepoint(uint32_t codepoint) {
+    if (codepoint < 0x80) return isalpha((int)codepoint) || codepoint == '\'';
+    if (codepoint >= 0x00a0 && codepoint <= 0x00bf) return false;
+    if (codepoint >= 0x2000 && codepoint <= 0x206f) return false;
+    return true;
 }
 
+/* A word is taken a character at a time, not a byte at a time: 'é' is two
+ * bytes, and a scan that walked over them separately would cut it in half. */
 static KitStr next_word(KitStr *rest) {
-    while (rest->count > 0 && !is_word_byte(rest->data[0])) kit_str_take(rest, 1);
-    size_t n = 0;
-    while (n < rest->count && is_word_byte(rest->data[n])) n++;
-    return kit_str_take(rest, n);
+    uint32_t codepoint = 0;
+
+    while (rest->count > 0) {
+        size_t used = kit_utf8_decode(*rest, &codepoint);
+        if (is_word_codepoint(codepoint)) break;
+        kit_str_take(rest, used);
+    }
+
+    size_t taken = 0;
+    while (taken < rest->count) {
+        KitStr from = kit_str_from_parts(rest->data + taken, rest->count - taken);
+        size_t used = kit_utf8_decode(from, &codepoint);
+        if (!is_word_codepoint(codepoint)) break;
+        taken += used;
+    }
+    return kit_str_take(rest, taken);
 }
 
 /* Everything one pass over the text needs, and what it found. A struct rather
@@ -89,8 +112,12 @@ static void count_words(void *context) {
         pass->total++;
         if (is_stop_word(pass->stop, word)) { pass->skipped++; continue; }
 
+        /* Lowercased where that can be done without a table: folding case
+         * above ASCII is a Unicode question, and this library does not carry
+         * the answer. "Été" and "été" therefore count apart. */
         char *key = kit_arena_strndup(pass->arena, word.data, word.count);
-        for (char *c = key; *c; c++) *c = (char)tolower((unsigned char)*c);
+        for (char *c = key; *c; c++)
+            if ((unsigned char)*c < 0x80) *c = (char)tolower((unsigned char)*c);
 
         size_t *counter = (size_t *)kit_map_get(pass->counts, key);
         if (counter) { (*counter)++; continue; }

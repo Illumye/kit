@@ -1,0 +1,10 @@
+Une bibliothèque tient dans un fichier. L'en-tête est copié dans le projet,
+puis il est utilisé — rien à installer, rien à lier. La mesure d'une
+bibliothèque est le code qu'elle retire du projet qui l'utilise.
+
+Les erreurs disent ce qui a échoué et où. Une erreur qui ne dit rien est pire
+que pas d'erreur du tout : elle coûte une enquête. « Ça ne marche pas » n'est
+pas un rapport, c'est une plainte.
+
+Un caractère n'est pas un octet. « échoué » tient en sept caractères et neuf
+octets, et un programme qui confond les deux coupe les mots en deux.

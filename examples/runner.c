@@ -56,16 +56,39 @@ typedef struct {
     size_t capacity, head, count;
 } Tail;
 
+/* A child writes whatever it likes, including bytes that are not text. Passed
+ * straight to a terminal they come out as mojibake at best; decoded and
+ * written back, every one of them becomes a character that can be printed.
+ * The same pass drops the control characters, since a program that fails is
+ * in no position to be moving the cursor around. */
+static KitStr printable(KitStr line, KitBuf *into) {
+    size_t   start = into->count;
+    uint32_t codepoint;
+
+    while (kit_utf8_next(&line, &codepoint)) {
+        char   encoded[KIT_UTF8_MAX];
+        size_t written;
+
+        if (codepoint < 0x20 && codepoint != '\t') codepoint = KIT_UTF8_REPLACEMENT;
+        written = kit_utf8_encode(codepoint, encoded);
+        kit_buf_append_n(into, encoded, written);
+    }
+    return kit_str_from_parts(into->items + start, into->count - start);
+}
+
 /* Drains the ring: the report is printed once and the lines are consumed as
  * they go, oldest first, which is the order they were written in. */
 static void report_tail(Tail *tail, size_t total_lines) {
     if (tail->count < total_lines)
         printf("  ... %zu earlier line(s)\n", total_lines - tail->count);
 
+    KitBuf safe = KIT_ZEROED;
     while (tail->count > 0) {
         KitStr line = kit_ring_pop(tail);
-        printf("  " KIT_STR_FMT "\n", KIT_STR_ARG(line));
+        printf("  " KIT_STR_FMT "\n", KIT_STR_ARG(printable(line, &safe)));
+        kit_buf_reset(&safe);
     }
+    kit_buf_free(&safe);
 }
 
 /* Two children at once, each waited for separately: what kit_command_spawn is

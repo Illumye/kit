@@ -46,6 +46,7 @@
  *   21. Ring buffer  kit_ring_*
  *   22. Heap         kit_heap_push, kit_heap_pop
  *   23. Checksums    kit_crc32, kit_sha256_*
+ *   24. UTF-8        kit_utf8_*
  *
  * REQUIREMENTS:
  *   C11 or later. On POSIX systems the implementation uses clock_gettime(),
@@ -1920,6 +1921,61 @@ void kit_sha256(const void *data, size_t size, unsigned char digest[KIT_SHA256_S
  * Returns buf, so it can be printed where it is produced. */
 char *kit_sha256_hex(const unsigned char digest[KIT_SHA256_SIZE],
                      char *buf, size_t bufsz);
+
+/* --------------------------------------------------------------------------
+ * SECTION 24 : UTF-8
+ *
+ * Text arrives as bytes and a codepoint is one to four of them, so anything
+ * that counts characters, cuts a string or prints what another program wrote
+ * has to know where the boundaries are.
+ *
+ *   KitStr   text = KIT_STR("héllo");
+ *   uint32_t codepoint;
+ *   while (kit_utf8_next(&text, &codepoint))
+ *       ...                                  // 'h', U+00E9, 'l', 'l', 'o'
+ *
+ * Decoding never fails. A byte that cannot start or continue a sequence
+ * decodes to U+FFFD, the replacement character, and one byte is consumed, so
+ * a loop over any input at all makes progress and ends. That is what makes it
+ * safe to run over bytes a child process produced. Ask kit_utf8_valid when
+ * the question is whether the input is well formed, which is a different
+ * question and deserves its own answer.
+ *
+ * Refused as malformed, not merely as unusual: an overlong encoding, since
+ * "/" written in two bytes is how a path check gets walked past; a surrogate
+ * half, which UTF-8 has no business carrying; and anything above U+10FFFF.
+ *
+ * What is not here: case folding, normalisation and display width. Each of
+ * those needs the Unicode tables, which are larger than this whole header and
+ * change once a year. This section knows where characters begin and end, and
+ * says nothing about what they mean.
+ * -------------------------------------------------------------------------- */
+
+/* The most bytes one codepoint takes. */
+#define KIT_UTF8_MAX 4
+
+/* U+FFFD, what a malformed byte decodes to. */
+#define KIT_UTF8_REPLACEMENT 0xfffdu
+
+/* Reads the first codepoint of sv into *out and returns how many bytes it
+ * took: never zero unless the view is empty, so a loop cannot get stuck. */
+size_t kit_utf8_decode(KitStr sv, uint32_t *out);
+
+/* Loop form: writes the next codepoint into *out, advances sv past it, and
+ * returns false once the view is empty. */
+bool kit_utf8_next(KitStr *sv, uint32_t *out);
+
+/* Writes the encoding of a codepoint into buf and returns how many bytes it
+ * wrote. A codepoint this encoding cannot carry is written as U+FFFD rather
+ * than refused, which keeps the result valid whatever came in. */
+size_t kit_utf8_encode(uint32_t codepoint, char buf[KIT_UTF8_MAX]);
+
+/* True when every byte is part of a well-formed sequence. */
+bool kit_utf8_valid(KitStr sv);
+
+/* How many codepoints, counting each malformed byte as one, so that it never
+ * answers less than the number of characters a reader would see. */
+size_t kit_utf8_count(KitStr sv);
 
 #ifdef __cplusplus
 }   /* extern "C" */
@@ -4750,6 +4806,129 @@ char *kit_sha256_hex(const unsigned char digest[KIT_SHA256_SIZE],
     }
     buf[written] = '\0';
     return buf;
+}
+
+/* --------------------------------------------------------------------------
+ * UTF-8
+ * -------------------------------------------------------------------------- */
+
+/* The smallest codepoint each length is allowed to carry. Anything below is
+ * an overlong encoding: the same character written in more bytes than it
+ * needs, which is only ever produced to slip a '/' or a '.' past a check. */
+static const uint32_t KIT__UTF8_FLOOR[5] = { 0, 0, 0x80u, 0x800u, 0x10000u };
+
+size_t kit_utf8_decode(KitStr sv, uint32_t *out) {
+    uint32_t codepoint = KIT_UTF8_REPLACEMENT;
+    size_t   used      = 1;
+
+    if (sv.count == 0 || sv.data == NULL) {
+        if (out) *out = 0;
+        return 0;
+    }
+
+    unsigned char lead = (unsigned char)sv.data[0];
+    size_t        need;
+
+    if      (lead < 0x80u)  { need = 1; codepoint = lead; }
+    else if (lead < 0xc0u)  { need = 0; }   /* a continuation with no lead */
+    else if (lead < 0xe0u)  { need = 2; codepoint = lead & 0x1fu; }
+    else if (lead < 0xf0u)  { need = 3; codepoint = lead & 0x0fu; }
+    else if (lead < 0xf8u)  { need = 4; codepoint = lead & 0x07u; }
+    else                    { need = 0; }   /* no lead byte goes this high */
+
+    if (need > 1) {
+        if (sv.count < need) {
+            need = 0;                        /* cut short by the end of the view */
+        } else {
+            for (size_t i = 1; i < need; i++) {
+                unsigned char next = (unsigned char)sv.data[i];
+                if ((next & 0xc0u) != 0x80u) { need = 0; break; }
+                codepoint = (codepoint << 6) | (next & 0x3fu);
+            }
+        }
+    }
+
+    if (need == 0 ||
+        codepoint < KIT__UTF8_FLOOR[need] ||     /* written longer than needed */
+        (codepoint >= 0xd800u && codepoint <= 0xdfffu) ||   /* a surrogate half */
+        codepoint > 0x10ffffu) {
+        codepoint = KIT_UTF8_REPLACEMENT;
+        used      = 1;                       /* one byte, so a loop advances */
+    } else {
+        used = need;
+    }
+
+    if (out) *out = codepoint;
+    return used;
+}
+
+bool kit_utf8_next(KitStr *sv, uint32_t *out) {
+    if (!sv || sv->count == 0) return false;
+
+    size_t used = kit_utf8_decode(*sv, out);
+    if (used == 0) return false;
+
+    sv->data  += used;
+    sv->count -= used;
+    return true;
+}
+
+size_t kit_utf8_encode(uint32_t codepoint, char buf[KIT_UTF8_MAX]) {
+    if (!buf) return 0;
+
+    if ((codepoint >= 0xd800u && codepoint <= 0xdfffu) || codepoint > 0x10ffffu)
+        codepoint = KIT_UTF8_REPLACEMENT;
+
+    if (codepoint < 0x80u) {
+        buf[0] = (char)codepoint;
+        return 1;
+    }
+    if (codepoint < 0x800u) {
+        buf[0] = (char)(0xc0u | (codepoint >> 6));
+        buf[1] = (char)(0x80u | (codepoint & 0x3fu));
+        return 2;
+    }
+    if (codepoint < 0x10000u) {
+        buf[0] = (char)(0xe0u | (codepoint >> 12));
+        buf[1] = (char)(0x80u | ((codepoint >> 6) & 0x3fu));
+        buf[2] = (char)(0x80u | (codepoint & 0x3fu));
+        return 3;
+    }
+    buf[0] = (char)(0xf0u | (codepoint >> 18));
+    buf[1] = (char)(0x80u | ((codepoint >> 12) & 0x3fu));
+    buf[2] = (char)(0x80u | ((codepoint >> 6) & 0x3fu));
+    buf[3] = (char)(0x80u | (codepoint & 0x3fu));
+    return 4;
+}
+
+bool kit_utf8_valid(KitStr sv) {
+    KitStr rest = sv;
+
+    while (rest.count > 0) {
+        uint32_t codepoint = 0;
+        size_t   used      = kit_utf8_decode(rest, &codepoint);
+
+        /* A real U+FFFD is three bytes; one byte means the decoder put it
+         * there in place of something malformed. */
+        if (codepoint == KIT_UTF8_REPLACEMENT && used == 1) return false;
+
+        rest.data  += used;
+        rest.count -= used;
+    }
+    return true;
+}
+
+size_t kit_utf8_count(KitStr sv) {
+    KitStr rest  = sv;
+    size_t total = 0;
+
+    while (rest.count > 0) {
+        size_t used = kit_utf8_decode(rest, NULL);
+        rest.data  += used;
+        rest.count -= used;
+        total++;
+    }
+    return total;
 }
 
 #endif /* KIT_IMPLEMENTATION && !KIT__IMPLEMENTATION_DONE */

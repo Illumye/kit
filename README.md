@@ -55,6 +55,7 @@ new one.
 | Ring buffer | `kit_ring` | The last N of something, in a fixed amount of memory |
 | Heap | `kit_heap` | A priority queue over a dynamic array |
 | Checksums | `kit_crc32`, `kit_sha256` | A cheap check, and a digest that identifies content |
+| UTF-8 | `kit_utf8` | Where characters begin and end, and whether the bytes are well formed |
 
 Each module is documented where it is declared. Read the header.
 
@@ -176,7 +177,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 178 tests over fifteen files, and the header compiles warning-free
+The suite is 190 tests over sixteen files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 
@@ -195,7 +196,7 @@ the build stops.
 | `orbit.c` | Steps a few bodies around a centre | vectors, scalar maths, arena, timer |
 | `runner.c` | Reports on other programs and runs them | commands, processes, captured output, ring buffer |
 | `tree.c` | Walks a directory, measures it, names its biggest files | filesystem, paths, scratch, heap |
-| `wordfreq.c` | Counts words in a text | string views, map, arrays, buffers, hashing |
+| `wordfreq.c` | Counts words in a text, accents included | string views, map, arrays, UTF-8 |
 | `peek.c` | Says what a file is, sums it, shows its bytes | option parsing, file kinds, checksums, hex dump |
 
 ```sh
