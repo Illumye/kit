@@ -131,6 +131,14 @@ builder abort rather than propagate an error. For the command-line tools this
 library targets, an out-of-memory condition is not recoverable and threading
 the error through every macro would poison the ergonomics.
 
+**Demonstration in the examples, exhaustiveness in the tests.**
+`tests/check_coverage.sh` requires every public name to be exercised by an
+example *or* by a test. It used to require an example, full stop, and that is
+what turned the second half of `wordfreq.c` into a guided tour: half a dozen
+calls whose only reason to exist was the check. Eleven names now rest on the
+tests alone, among them `kit_map_entry_live`, which the old rule had shown in
+an example and never tested.
+
 ## Known limitations
 
 **C++ needs a flexible array member.** The header compiles as C++17, but the

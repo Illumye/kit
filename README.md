@@ -178,16 +178,18 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 203 tests over seventeen files, and the header compiles warning-free
+The suite is 204 tests over seventeen files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 
 ## Examples
 
 Eight programs under `examples/`, each one a small tool rather than a tour of
-the API. Between them they use every public name in the header, which
-`make check-examples` enforces: add a function without showing it anywhere and
-the build stops.
+the API. Every public name in the header is exercised by one of them or by the
+test suite, which `make check-examples` enforces: add a function and run it
+nowhere, and the build stops. The examples take the names a tool would reach
+for on its own; the handful that only a test has a reason to call stay in the
+tests, which is where exhaustiveness belongs.
 
 | Example | What it does | What it leans on |
 |---|---|---|
