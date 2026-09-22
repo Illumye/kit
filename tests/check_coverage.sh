@@ -1,6 +1,9 @@
 #!/bin/sh
-# Every public name of kit.h must appear in at least one example, so that
-# "the examples show what the library does" is a fact rather than a hope.
+# Every public name of kit.h must be exercised by something that runs: an
+# example, or the test suite. The examples say what the library is for and the
+# tests say what it does; a name found in neither is a name nobody has ever
+# run. Keeping the examples alone responsible for that was what turned one of
+# them into a guided tour, which is the opposite of what an example is.
 #
 # What is exempt, and why:
 #   compiler plumbing      KIT_ALIGNOF, KIT_CAST_LIKE, KIT_LITERAL, KIT_NORETURN,
@@ -9,7 +12,7 @@
 #   build-time knobs       KIT_IMPLEMENTATION and the KIT_*_CAPACITY sizes are
 #                          defined by the caller, never called
 #   deliberate aborts      KIT_PANIC, KIT_TODO, KIT_UNREACHABLE end the process;
-#                          an example that runs them is an example that crashes
+#                          a caller that runs them is a caller that crashes
 #   KitArenaRegion         the arena's own bookkeeping, named in the struct so
 #                          that it can be declared, never by a caller
 
@@ -18,6 +21,7 @@ export LC_ALL=C
 
 HEADER=${1:-kit.h}
 EXAMPLES=${2:-examples}
+TESTS=${3:-tests}
 
 exempt='^(KIT_ALIGNOF|KIT_CAST_LIKE|KIT_LITERAL|KIT_NORETURN|KIT_PRINTF_FORMAT|KIT_THREAD_LOCAL|KIT_MAX_ALIGN|KitMaxAlign|KIT_H|KIT_IMPLEMENTATION|KIT_IMPLEMENTATION_DONE|KIT_ERROR_CAPACITY|KIT_ARENA_REGION_SIZE|KIT_ARRAY_INIT_CAP|KIT_READ_CHUNK|KIT_NO_VEC_MATH|KIT_NO_THREAD_LOCAL|KIT_PANIC|KIT_TODO|KIT_UNREACHABLE|KitArenaRegion)$'
 
@@ -38,15 +42,21 @@ public=$(
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-cat "$EXAMPLES"/*.c | grep -aoE '\b(kit_[a-z0-9_]+|KIT_[A-Z0-9_]+|Kit[A-Za-z0-9_]*)\b' | sort -u > "$WORK/used"
+names() { grep -haoE '\b(kit_[a-z0-9_]+|KIT_[A-Z0-9_]+|Kit[A-Za-z0-9_]*)\b' "$@" | sort -u; }
+
+names "$EXAMPLES"/*.c                                        > "$WORK/examples"
+names "$TESTS"/*.c "$TESTS"/*.cpp "$TESTS"/fuzz/*.c          > "$WORK/tests"
+sort -u "$WORK/examples" "$WORK/tests"                       > "$WORK/used"
+
 missing=$(printf '%s\n' "$public" | grep -avxF -f "$WORK/used" || true)
 
-total=$(printf '%s\n' "$public" | grep -c . || true)
+total=$(printf '%s\n' "$public"   | grep -c . || true)
 absent=$(printf '%s\n' "$missing" | grep -c . || true)
+shown=$(printf '%s\n' "$public" | grep -axF -f "$WORK/examples" | grep -c . || true)
 
 if [ "$absent" -gt 0 ]; then
-    echo "$absent of $total public names are in no example:"
+    echo "$absent of $total public names are in no example and in no test:"
     printf '%s\n' "$missing" | sed 's/^/  /'
     exit 1
 fi
-echo "examples: ok (all $total public names are demonstrated)"
+echo "coverage: ok ($total public names, $shown of them in an example)"

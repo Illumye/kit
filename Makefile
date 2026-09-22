@@ -146,8 +146,8 @@ examples/%: examples/%.c kit.h
 # The examples are the integration tests: each one drives several modules at
 # once, the way a real program would, which no unit test does. They are run
 # here and their output is checked, so an example that stops working stops the
-# build. check_examples.sh additionally fails if any public name is shown
-# nowhere.
+# build. check_coverage.sh additionally fails if any public name is exercised
+# nowhere, by an example or by a test.
 check-examples: $(EXAMPLE_BIN)
 	@./examples/build --clean > /dev/null 2>&1
 	@./examples/build -r 2>&1 | grep -q 'hello, world'
@@ -186,7 +186,7 @@ check-examples: $(EXAMPLE_BIN)
 	@./examples/journal --dir build/journal --limit 700 --lines 20 --quiet 2>&1 \
 	   | grep -q '20 lines written'
 	@rm -rf build/journal
-	@./tests/check_examples.sh
+	@./tests/check_coverage.sh
 
 clean:
 	rm -f $(TEST_BIN) $(TEST_ASAN) $(WIN_BIN) $(FUZZ_BIN) tests/run_test_cxx tests/run_coexistence \
