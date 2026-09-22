@@ -3,8 +3,9 @@
  * growable containers are for: not one byte of the input is copied to be
  * looked at, only the words worth keeping are.
  *
- * Shows: KitStr slicing and comparison, KitMap as a counter, KitBuf to build
- * output, the kit_array_* macros over a struct of your own, and the hashes.
+ * Shows: KitStr slicing, KitMap as a counter, KitBuf to build output, the
+ * kit_array_* macros over a struct of your own, and UTF-8 decoding used to
+ * decide where a word begins and ends.
  *
  *   ./examples/wordfreq --top 5 examples/demo/prose.txt
  */
@@ -23,32 +24,12 @@ typedef struct {            /* any struct with these three fields works */
     size_t capacity;
 } Entries;
 
-/* Words that say nothing about a text. Kept as views over a literal, so the
- * list costs nothing at run time. */
-typedef struct { KitStr *items; size_t count, capacity; } Words;
-
-/* An array of pointers, which the search macros can compare. */
-typedef struct { const char **items; size_t count, capacity; } Names;
-
-static void add_stop_words(Words *stop) {
-    static const char *const list[] = {
-        "the", "a", "an", "and", "or", "of", "to", "in", "is", "it", "that", "this"
-    };
-    kit_array_reserve(stop, KIT_COUNTOF(list));
-    for (size_t i = 0; i < KIT_COUNTOF(list); i++)
-        kit_array_push(stop, kit_str_from(list[i]));
-}
-
-static bool is_stop_word(const Words *stop, KitStr word) {
-    kit_array_each(KitStr, it, stop)
-        if (kit_str_eq_nocase(*it, word)) return true;
-    return false;
-}
-
-/* What the kit_map_each macro hands out, named rather than left implicit. */
-static void print_entry(const KitMapEntry *entry, size_t rank) {
-    printf("  %2zu. %-16s %08x\n", rank, entry->key, kit_hash_str(entry->key));
-}
+/* Words that say nothing about a text. Dropped once the count is in rather
+ * than tested on the way: twelve lookups at the end cost less than a walk of
+ * the list for every word of the input, and the totals come out the same. */
+static const char *const stop_words[] = {
+    "the", "a", "an", "and", "or", "of", "to", "in", "is", "it", "that", "this"
+};
 
 /* Letters and apostrophes make a word; everything else separates them.
  *
@@ -91,7 +72,7 @@ static KitStr next_word(KitStr *rest) {
  * again: the harness hands a single pointer back to the body it times. */
 typedef struct {
     KitStr    text;
-    Words    *stop;
+    bool      keep_stop_words;
     KitArena *arena;
     KitMap   *counts;
     size_t    total, skipped;
@@ -110,7 +91,6 @@ static void count_words(void *context) {
     KitStr rest = pass->text;
     for (KitStr word = next_word(&rest); word.count > 0; word = next_word(&rest)) {
         pass->total++;
-        if (is_stop_word(pass->stop, word)) { pass->skipped++; continue; }
 
         /* Lowercased where that can be done without a table: folding case
          * above ASCII is a Unicode question, and this library does not carry
@@ -125,6 +105,14 @@ static void count_words(void *context) {
         counter  = kit_arena_alloc_array(pass->arena, size_t, 1);
         *counter = 1;
         kit_map_set(pass->counts, key, counter);
+    }
+
+    if (pass->keep_stop_words) return;
+    for (size_t i = 0; i < KIT_COUNTOF(stop_words); i++) {
+        const size_t *counter = (const size_t *)kit_map_get(pass->counts, stop_words[i]);
+        if (!counter) continue;
+        pass->skipped += *counter;
+        kit_map_delete(pass->counts, stop_words[i]);
     }
 }
 
@@ -161,17 +149,16 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* A fingerprint of the input, mixed so that the low bits are usable. */
+    /* A fingerprint of the input, mixed so that the low bits are usable: two
+     * runs that report it are counting the same text or they are not. */
     uint32_t fingerprint = kit_hash_mix32(kit_hash_bytes(text, size));
-
-    Words stop = KIT_ZEROED;
-    if (!keep_stop_words) add_stop_words(&stop);
 
     /* The map stores counters that live in an arena, so nothing is freed one
      * by one and the keys stay valid as long as the arena does. */
     KitArena arena  = KIT_ZEROED;
     KitMap   counts = KIT_ZEROED;
-    Pass     pass   = { kit_str_from_parts(text, size), &stop, &arena, &counts, 0, 0 };
+    Pass     pass   = { kit_str_from_parts(text, size), keep_stop_words,
+                        &arena, &counts, 0, 0 };
 
     count_words(&pass);
 
@@ -186,10 +173,6 @@ int main(int argc, char **argv) {
     free(text);                             /* the passes read straight from it */
 
     /* Ranking wants an array, which the map does not pretend to be. */
-    /* A word that turned out to be noise after all can simply go. */
-    if (kit_map_has(&counts, "dog") && kit_map_delete(&counts, "dog"))
-        KIT_DEBUG("dropped a word that says nothing here");
-
     Entries ranked = KIT_ZEROED;
     kit_array_reserve(&ranked, counts.count);
     kit_map_each(&counts, e) {
@@ -211,64 +194,14 @@ int main(int argc, char **argv) {
         kit_buf_append(&out, ranked.items[i].word);
         kit_buf_append_char(&out, '\n');
     }
-    if (ranked.count > 0) {
-        kit_buf_append(&out, "most common: ");
-        kit_buf_append_str(&out, kit_str_from(kit_array_first(&ranked).word));
-        kit_buf_append(&out, ", rarest: ");
-        kit_buf_append_str(&out, kit_str_from(kit_array_last(&ranked).word));
-        kit_buf_append_n(&out, " (once or nearly)\n", 18);
-    }
+    if (shown < ranked.count)
+        kit_buf_printf(&out, "  ... and %zu more, --top %zu shows them all\n",
+                       ranked.count - shown, ranked.count);
+
     fputs(kit_buf_cstr(&out), stdout);
-
-    /* A second report, on the same buffer: emptied rather than freed. */
-    kit_buf_reset(&out);
-    kit_buf_printf(&out, "the ranking held %zu entries", ranked.count);
-    char *saved = kit_buf_dup(&out);        /* a copy that outlives the buffer */
-
-    /* Dropping entries: the last one costs nothing, and any other one costs
-     * the ordering, which is why it is called a swap. */
-    if (ranked.count > 2) {
-        Entry dropped = kit_array_pop(&ranked);
-        kit_array_swap_remove(&ranked, 0);
-        printf("%s, now %zu after dropping %s and the leader\n",
-               saved, ranked.count, dropped.word);
-    } else {
-        printf("%s\n", saved);
-    }
-    free(saved);
-
-    /* Searching by value. The macros compare with ==, so they work on an
-     * array of pointers and not on the array of structs above. */
-    Names printed = KIT_ZEROED;
-    for (size_t i = 0; i < shown && i < ranked.count; i++)
-        kit_array_push(&printed, ranked.items[i].word);
-
-    if (printed.count > 0) {
-        size_t at = 0;
-        kit_array_find(&printed, kit_array_last(&printed), at);
-        printf("the last word printed sits at index %zu of %zu\n", at, printed.count);
-#ifdef kit_array_contains        /* absent where GNU statement expressions are */
-        if (!kit_array_contains(&printed, kit_array_first(&printed)))
-            KIT_WARN("the list lost its head");
-#endif
-    }
-    kit_array_free(&printed);
-
-    /* The same walk the macro does, written out: a slot can be empty or hold
-     * the trace of a deleted key, which kit_map_entry_live tells apart. */
-    size_t live = 0, rank = 0;
-    for (size_t i = 0; i < counts.capacity; i++)
-        if (kit_map_entry_live(&counts.entries[i])) {
-            live++;
-            if (rank < 3) print_entry(&counts.entries[i], ++rank);
-        }
-    printf("%zu live slots of %zu\n", live, counts.capacity);
-
-    kit_map_reset(&counts);                 /* keeps the allocation for reuse */
 
     kit_buf_free(&out);
     kit_array_free(&ranked);
-    kit_array_free(&stop);
     kit_map_free(&counts);
     kit_arena_free(&arena);
     return 0;
