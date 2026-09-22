@@ -377,6 +377,37 @@ TEST(map_reset_keeps_the_allocation) {
     kit_map_free(&hm);
 }
 
+/* The three states a slot can be in, told apart by the one predicate a caller
+ * walking the table by hand has. kit_map_each is that walk, so the two must
+ * agree on what is there: a deleted key leaves the slot occupied, and only
+ * the predicate separates that trace from a key that is still live. */
+TEST(map_entry_live_separates_the_slot_states) {
+    KitMap hm = {0};
+    int a = 1, b = 2;
+    kit_map_set(&hm, "alpha", &a);
+    kit_map_set(&hm, "beta", &b);
+    CHECK(kit_map_delete(&hm, "alpha"));
+
+    size_t live = 0, empty = 0, tombstones = 0;
+    for (size_t i = 0; i < hm.capacity; i++) {
+        const KitMapEntry *e = &hm.entries[i];
+        if (kit_map_entry_live(e))    live++;
+        else if (e->key == NULL)      empty++;
+        else                          tombstones++;
+    }
+    CHECK_INT(live, 1);
+    CHECK_INT(tombstones, 1);                  /* the delete still holds a slot */
+    CHECK_INT(live, hm.count);
+    CHECK_INT(live + tombstones, hm.used);     /* `used` counts both */
+    CHECK_INT(live + tombstones + empty, hm.capacity);
+
+    size_t visited = 0;
+    kit_map_each(&hm, e) { CHECK_STR(e->key, "beta"); visited++; }
+    CHECK_INT(visited, live);
+
+    kit_map_free(&hm);
+}
+
 /* Regression: the load factor counted live entries only, so a set/delete
  * workload filled the table with tombstones that were never reclaimed. Probe
  * sequences then grew until every lookup scanned the whole table.
@@ -435,6 +466,7 @@ int main(void) {
     RUN(map_stores_null_values);
     RUN(map_grows_and_keeps_every_entry);
     RUN(map_reset_keeps_the_allocation);
+    RUN(map_entry_live_separates_the_slot_states);
     RUN(map_sliding_window_does_not_degrade);
     return utest_report();
 }
