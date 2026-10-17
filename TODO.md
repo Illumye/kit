@@ -46,7 +46,11 @@ infinite run of zeros.
 **Micro-benchmark.** `kit_bench_run` and `kit_bench_report`, section 20.
 Warm-up excluded, minimum reported first. No standard deviation on purpose:
 the square root would drag in the maths library that `KIT_NO_VEC_MATH`
-exists to avoid.
+exists to avoid. The body is called through a volatile pointer: with the
+implementation in the same file, clang inlined the harness and the body
+together and deleted the work nobody read afterwards, so that every sample
+timed the clock. gcc never showed it; the first run of continuous
+integration over the section did, on clang and on macOS, on 2026-09-22.
 
 **Sorting.** `kit_array_sort`, in the array section, taking the element size
 and the count from the array. Not stable, since `qsort` is not.
@@ -158,8 +162,12 @@ cross-compiles the suite with mingw-w64 and runs it under wine, so every
 `_WIN32` branch is compiled and executed on this machine. That is not a real
 Windows box: wine reimplements the API, the toolchain is mingw rather than
 MSVC, and only the msvcrt runtime is covered, not UCRT. Continuous integration
-covers the rest, on `windows-latest` with MSVC.
+covers the rest on `windows-latest`: every suite, and the C++ check, built
+with MSVC against UCRT.
 
-**macOS and MSVC have never been compiled here.** Their branches are reasoned
-about rather than tested, and only continuous integration exercises them. Until
-it has run at least once, treat both as unverified.
+**macOS and MSVC are compiled by continuous integration only.** Never on
+this machine, so a change to their branches is checked by the push that
+carries it and not before. Both jobs have run since 2026-09-17. The MSVC
+one named its suites by hand and stopped at the first six, which left the
+ten added on 2026-09-18, and the macros only they expand, unbuilt there
+until it was made to take every suite on 2026-10-17.
