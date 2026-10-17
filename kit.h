@@ -1779,12 +1779,17 @@ void kit_bench_report(FILE *out, const KitBench *result);
 #define kit_ring_at(r, i) ((r)->items[((r)->head + (i)) % (r)->capacity])
 
 /* Take the oldest entry out, as an expression. Empty is a programming error,
- * as it is for kit_array_pop, and aborts rather than inventing a value. */
+ * as it is for kit_array_pop, and aborts rather than inventing a value.
+ *
+ * The panic sits inside the index, as in kit_array_pop, so that nothing but a
+ * constant follows a call that never returns. A read of the slot there is
+ * code MSVC reports as unreachable, which /W4 /WX makes an error at every
+ * place the macro is used. */
 #define kit_ring_pop(r)                                                        \
-    ((r)->count > 0                                                            \
-         ? ((r)->count--,                                                      \
-            (r)->items[kit__ring_take(&(r)->head, (r)->capacity)])             \
-         : (KIT_PANIC("kit_ring_pop on an empty ring"), (r)->items[0]))
+    ((r)->items[(r)->count > 0                                                 \
+                    ? ((r)->count--,                                           \
+                       kit__ring_take(&(r)->head, (r)->capacity))              \
+                    : (KIT_PANIC("kit_ring_pop on an empty ring"), (size_t)0)])
 
 /* Walk from oldest to newest. The index is yours to name, which is what
  * keeps two nested loops from shadowing each other:
