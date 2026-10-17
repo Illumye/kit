@@ -18,6 +18,8 @@ typedef struct {
     size_t      capacity, head, count;
 } Names;
 
+static const char *self = NULL;   /* this binary, to re-run as the child */
+
 TEST(a_ring_fills_before_it_wraps) {
     Ring r = KIT_ZEROED;
     kit_ring_init(&r);
@@ -127,6 +129,22 @@ TEST(popping_and_pushing_can_alternate_for_ever) {
     CHECK_INT(r.count, 2);
 }
 
+/* Popping an empty ring ends the process, so it is checked from outside: the
+ * suite re-runs its own binary to do it, as test_assert.c does, and reads what
+ * the child printed on its way out. */
+TEST(popping_an_empty_ring_aborts_and_says_so) {
+    KitCommand cmd = KIT_ZEROED;
+    KitBuf     err = KIT_ZEROED;
+    kit_command_push_all(&cmd, self, "--pop-empty", NULL);
+
+    CHECK(!kit_command_capture_split(&cmd, NULL, &err, NULL));
+    CHECK(err.items != NULL &&
+          strstr(kit_buf_cstr(&err), "kit_ring_pop on an empty ring") != NULL);
+
+    kit_command_free(&cmd);
+    kit_buf_free(&err);
+}
+
 /* Storage the caller owns, with the capacity set by hand: the same macros,
  * with items a pointer rather than an array. */
 TEST(a_ring_over_borrowed_storage_behaves_the_same) {
@@ -142,7 +160,14 @@ TEST(a_ring_over_borrowed_storage_behaves_the_same) {
     CHECK_INT(kit_ring_at(&r, 2), 4);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "--pop-empty") == 0) {
+        Ring r = KIT_ZEROED;
+        kit_ring_init(&r);
+        return kit_ring_pop(&r);
+    }
+
+    self = argv[0];
     kit_log_set_level(KIT_LOG_CRITICAL);
     utest_begin("ring");
     RUN(a_ring_fills_before_it_wraps);
@@ -151,6 +176,7 @@ int main(void) {
     RUN(each_walks_from_the_oldest_to_the_newest);
     RUN(pop_takes_the_oldest_and_leaves_the_rest);
     RUN(popping_and_pushing_can_alternate_for_ever);
+    RUN(popping_an_empty_ring_aborts_and_says_so);
     RUN(a_ring_over_borrowed_storage_behaves_the_same);
     return utest_report();
 }
