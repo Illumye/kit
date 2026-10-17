@@ -1701,8 +1701,11 @@ int64_t kit_random_between(KitRandom *r, int64_t lo, int64_t hi);
  * library that KIT_NO_VEC_MATH exists to avoid.
  *
  * A body that takes less than a microsecond measures the clock rather than
- * itself. Put the repetition inside it and divide, which is also the only way
- * to stop the optimizer from deleting work whose result nobody reads.
+ * itself: put the repetition inside it and divide. And leave what it computes
+ * in the context. The body is called through a pointer the optimizer cannot
+ * see through, so whatever it writes there has to be computed, even with the
+ * implementation in the same file; a result that ends in a local is still the
+ * compiler's to delete, and the clock is then all that gets timed.
  * -------------------------------------------------------------------------- */
 
 typedef struct {
@@ -4559,12 +4562,20 @@ KitBench kit_bench_run(const char *name, size_t samples,
     if (!body) return result;
     if (samples == 0) samples = 1;
 
-    body(context);   /* warm-up, deliberately not measured */
+    /* Called through a pointer the optimizer cannot see through. With the
+     * implementation in the caller's file, this function and the body can be
+     * inlined together, and work whose result nobody reads afterwards is then
+     * deleted: clang does it, and every sample times two consecutive clock
+     * readings. A call the compiler cannot resolve runs the body as written,
+     * between the two. */
+    void (*volatile call)(void *) = body;
+
+    call(context);   /* warm-up, deliberately not measured */
 
     double mean = 0.0;
     for (size_t i = 0; i < samples; i++) {
         KitTimer clock = kit_timer_start();
-        body(context);
+        call(context);
         double ms = kit_timer_ms(clock);
 
         result.total_ms += ms;

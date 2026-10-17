@@ -82,7 +82,12 @@ TEST(the_report_names_the_run_and_its_numbers) {
 }
 
 /* A body that does more work cannot come out faster. Ten times the work with
- * a factor of two to spare, so that a loaded machine does not fail the run. */
+ * a factor of two to spare, so that a loaded machine does not fail the run.
+ *
+ * Nothing reads light or heavy afterwards, and that is the point: it is the
+ * case where clang, inlining the harness and the body into this function,
+ * deleted the loop and timed the clock twice. Reading the sinks here would
+ * make the test pass and hide that again. */
 TEST(more_work_measures_as_more_time) {
     Work light = { 0, 20000, 0.0 };
     Work heavy = { 0, 200000, 0.0 };
