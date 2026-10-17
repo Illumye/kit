@@ -54,15 +54,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ilammy/msvc-dev-cmd@v1
 
-      # /wd4200 is the flexible array member the arena regions use, which MSVC
-      # accepts and warns about.
+      # Every suite there is, found the way the Makefile finds them: the list
+      # this used to spell out stopped at six while the suites grew to sixteen.
+      # A failure does not end the loop, so one run names every suite that
+      # breaks. /wd4200 is the flexible array member the arena regions use,
+      # which MSVC accepts and warns about.
       - name: build and run the suites
         shell: cmd
         run: |
-          for %%f in (tests\test_error.c tests\test_files.c tests\test_fs.c tests\test_memory.c tests\test_system.c tests\test_text.c) do (
-            cl /nologo /std:c11 /W4 /WX /wd4200 /Fe:%%~nf.exe %%f || exit /b 1
-            %%~nf.exe || exit /b 1
+          set rc=0
+          for %%f in (tests\test_*.c) do (
+            cl /nologo /std:c11 /W4 /WX /wd4200 /Fe:%%~nf.exe %%f && %%~nf.exe || set rc=1
           )
+          exit /b %rc%
 
       - name: the same header from C++
         shell: cmd
