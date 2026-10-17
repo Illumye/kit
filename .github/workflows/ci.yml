@@ -24,7 +24,7 @@ jobs:
             cxx: clang++
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Compiles the header under a strict -std=c11 -Werror, runs the suite
       # natively, then again under AddressSanitizer and UBSan with leak
@@ -39,7 +39,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: test-all
         run: make CC=cc CXX=c++ test-all
@@ -51,7 +51,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ilammy/msvc-dev-cmd@v1
 
       # Every suite there is, found the way the Makefile finds them: the list
@@ -86,8 +86,8 @@ jobs:
         platform: [linux/s390x, linux/arm64]
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/setup-qemu-action@v4
 
       - name: test
         run: |
@@ -102,7 +102,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: fuzz
         run: make FUZZ_SECS=60 fuzz
@@ -113,7 +113,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: install the cross toolchain
         run: |
