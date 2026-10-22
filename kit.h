@@ -1300,6 +1300,23 @@ bool kit_cli_complete(FILE *fp, const KitCliOpt *opts, size_t n_opts, int argc, 
 #define kit_cli_complete_arr(fp, opts, argc, argv) \
     kit_cli_complete((fp), (opts), KIT_COUNTOF(opts), (argc), (argv))
 
+/* Prints the script that connects a shell's completion to kit_cli_complete,
+ * for "bash", "zsh", "fish" or "powershell". program is the command as typed:
+ * a path is cut down to its file name, and the ".exe" Windows adds is
+ * dropped. Any other shell, or a name the scripts could not hold without
+ * quoting, is KIT_ERR_INVALID.
+ *
+ * How the program hands it out is its own choice, usually as a command, and
+ * how a person installs it is then one line:
+ *
+ *   eval "$(tool completion bash)"           in ~/.bashrc
+ *   eval "$(tool completion zsh)"            in ~/.zshrc, after compinit
+ *   tool completion fish > ~/.config/fish/completions/tool.fish
+ *   tool completion powershell | Out-String | Invoke-Expression   in $PROFILE
+ */
+bool kit_cli_completion_script(FILE *fp, const char *program, const char *shell,
+                               KitError *err);
+
 /* --------------------------------------------------------------------------
  * SECTION 10 : BUFFERS
  * -------------------------------------------------------------------------- */
@@ -4165,6 +4182,245 @@ bool kit_cli_complete(FILE *fp, const KitCliOpt *opts, size_t n_opts, int argc, 
     }
 
     fprintf(fp, "%s\n", directive);
+    return true;
+}
+
+/* The scripts, one string per line. @NAME@ stands for the command as typed,
+ * @ID@ for the same name reduced to what a function name may hold. Each one
+ * asks the program and shows its answer; what to answer is decided above,
+ * in C, once for all four. */
+static const char *const kit__cli_script_bash[] = {
+    "# bash completion for @NAME@, written by the program itself.",
+    "",
+    "__kit_complete_@ID@() {",
+    "    local line=${COMP_LINE:0:COMP_POINT} word words=() i spaced",
+    "",
+    "    # bash splits words at every character of COMP_WORDBREAKS, '=' and ':'",
+    "    # among them. They go back together the way they were typed, so that the",
+    "    # program reads --color=al as one word, the way its parser would.",
+    "    for ((i = 0; i <= COMP_CWORD; i++)); do",
+    "        spaced=0",
+    "        [[ $line == [[:space:]]* ]] && spaced=1",
+    "        line=${line#\"${line%%[![:space:]]*}\"}",
+    "        word=${COMP_WORDS[i]}",
+    "        ((i == COMP_CWORD)) && word=$line",
+    "        if ((i == 0 || spaced)); then",
+    "            words+=(\"$word\")",
+    "        else",
+    "            words[${#words[@]}-1]+=$word",
+    "        fi",
+    "        line=${line#\"$word\"}",
+    "    done",
+    "",
+    "    local program=${words[0]} cur=${words[${#words[@]}-1]} out",
+    "    [[ $program == \\~/* ]] && program=$HOME${program:1}",
+    "    out=$(\"$program\" __complete \"${words[@]:1}\" 2>/dev/null) || return",
+    "",
+    "    # readline replaces only what follows the last word break in the word,",
+    "    # so every answer loses what comes before it.",
+    "    local prefix=${cur%\"${cur##*[$COMP_WORDBREAKS]}\"} answers=() n",
+    "    while IFS= read -r word; do answers+=(\"$word\"); done <<< \"$out\"",
+    "    n=${#answers[@]}",
+    "",
+    "    COMPREPLY=()",
+    "    for ((i = 0; i < n - 1; i++)); do",
+    "        word=${answers[i]%%$'\\t'*}",
+    "        COMPREPLY+=(\"${word#\"$prefix\"}\")",
+    "    done",
+    "    if [[ ${answers[n-1]} == :files ]]; then",
+    "        type compopt &>/dev/null && compopt -o filenames",
+    "        while IFS= read -r word; do",
+    "            [[ -n $word ]] && COMPREPLY+=(\"$word\")",
+    "        done <<< \"$(compgen -f -- \"${cur#\"$prefix\"}\")\"",
+    "    fi",
+    "}",
+    "complete -o nosort -F __kit_complete_@ID@ @NAME@ 2>/dev/null ||",
+    "    complete -F __kit_complete_@ID@ @NAME@",
+    NULL
+};
+
+static const char *const kit__cli_script_zsh[] = {
+    "#compdef @NAME@",
+    "# zsh completion for @NAME@, written by the program itself.",
+    "compdef _@ID@ @NAME@",
+    "",
+    "_@ID@() {",
+    "    local program=${words[1]} line value head directive",
+    "    local -a answers described",
+    "    [[ $program == \\~/* ]] && program=$HOME${program#\\~}",
+    "    answers=(\"${(@f)$(\"$program\" __complete \"${(@)words[2,CURRENT-1]}\" \"$PREFIX\" 2>/dev/null)}\")",
+    "    directive=${answers[-1]}",
+    "    answers=(\"${(@)answers[1,-2]}\")",
+    "",
+    "    # Past \"=\", only the values are listed: the option stays in the word,",
+    "    # where zsh keeps it as an ignored prefix.",
+    "    if [[ $PREFIX == -*=* ]]; then",
+    "        head=${PREFIX%%=*}=",
+    "        compset -P '*='",
+    "    fi",
+    "",
+    "    for line in \"${answers[@]}\"; do",
+    "        value=${line%%$'\\t'*}",
+    "        value=${value#\"$head\"}",
+    "        if [[ $line == *$'\\t'* ]]; then",
+    "            described+=(\"${value//:/\\\\:}:${line#*$'\\t'}\")",
+    "        else",
+    "            described+=(\"${value//:/\\\\:}\")",
+    "        fi",
+    "    done",
+    "    (( ${#described} )) && _describe -V -t @ID@ '@NAME@' described",
+    "    [[ $directive == :files ]] && _files",
+    "}",
+    "",
+    "# Loaded from $fpath, the file is the body of _@ID@ and runs as it.",
+    "if [[ $funcstack[1] == _@ID@ ]]; then _@ID@ \"$@\"; fi",
+    NULL
+};
+
+static const char *const kit__cli_script_fish[] = {
+    "# fish completion for @NAME@, written by the program itself.",
+    "",
+    "function __kit_complete_@ID@",
+    "    # fish 4 hands the words over expanded; an older fish, as typed.",
+    "    set -l words (commandline -xpc 2>/dev/null; or commandline -opc)",
+    "    set -l program $words[1]",
+    "    set -e words[1]",
+    "    set -l current (commandline -ct)",
+    "    set -l answers ($program __complete $words \"$current\" 2>/dev/null)",
+    "    or return",
+    "    set -q answers[1]",
+    "    or return",
+    "",
+    "    set -l directive $answers[-1]",
+    "    set -e answers[-1]",
+    "    # printf rather than echo: a candidate such as -n is not an option here.",
+    "    for answer in $answers",
+    "        printf '%s\\n' $answer",
+    "    end",
+    "    if test \"$directive\" = :files",
+    "        # A value written --name=value is completed after the \"=\".",
+    "        set -l head (string match -r -- '^-[^=]*=' \"$current\")",
+    "        for path in (__fish_complete_path (string replace -r -- '^-[^=]*=' '' \"$current\"))",
+    "            printf '%s%s\\n' \"$head\" $path",
+    "        end",
+    "    end",
+    "end",
+    "",
+    "complete -c @NAME@ -e",
+    "complete -c @NAME@ -f -k -a '(__kit_complete_@ID@)'",
+    NULL
+};
+
+static const char *const kit__cli_script_powershell[] = {
+    "# PowerShell completion for @NAME@, written by the program itself.",
+    "",
+    "Register-ArgumentCompleter -Native -CommandName '@NAME@', '@NAME@.exe' -ScriptBlock {",
+    "    param($wordToComplete, $commandAst, $cursorPosition)",
+    "",
+    "    # The words before the one under the cursor, as typed.",
+    "    $words = @($commandAst.CommandElements |",
+    "        Where-Object { $_.Extent.EndOffset -lt $cursorPosition } |",
+    "        ForEach-Object { $_.Extent.Text })",
+    "",
+    "    # Before 7.3, PowerShell drops an empty argument on its way to a native",
+    "    # program, and an empty word under the cursor is the one that matters.",
+    "    $current = $wordToComplete",
+    "    if ($current -eq '' -and (",
+    "            $PSVersionTable.PSVersion -lt [version]'7.2.0' -or",
+    "            ($PSVersionTable.PSVersion -lt [version]'7.3.0' -and",
+    "             -not [ExperimentalFeature]::IsEnabled('PSNativeCommandArgumentPassing')) -or",
+    "            $PSNativeCommandArgumentPassing -eq 'Legacy')) {",
+    "        $current = '\"\"'",
+    "    }",
+    "",
+    "    $request = @($words | Select-Object -Skip 1) + $current",
+    "    $answers = @(& $words[0] __complete @request 2>$null)",
+    "    if ($answers.Count -eq 0) { return }",
+    "",
+    "    $found = $false",
+    "    foreach ($answer in ($answers | Select-Object -SkipLast 1)) {",
+    "        $value, $help = $answer -split \"`t\", 2",
+    "        if (-not $value) { continue }",
+    "        if (-not $help) { $help = $value }",
+    "        $found = $true",
+    "        [System.Management.Automation.CompletionResult]::new($value, $value, 'ParameterValue', $help)",
+    "    }",
+    "",
+    "    # Answering nothing at all would let PowerShell offer file names.",
+    "    if (-not $found -and $answers[-1] -ne ':files') { '' }",
+    "}",
+    NULL
+};
+
+/* What a name may hold to stand unquoted in all four scripts. */
+static bool kit__cli_name_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+           c == '_' || c == '-' || c == '.' || c == '+';
+}
+
+static void kit__cli_write_script(FILE *fp, const char *const *lines, const char *name,
+                                  const char *id) {
+    for (; *lines; lines++) {
+        for (const char *c = *lines; *c; ) {
+            if      (strncmp(c, "@NAME@", 6) == 0) { fputs(name, fp); c += 6; }
+            else if (strncmp(c, "@ID@", 4) == 0)   { fputs(id, fp);   c += 4; }
+            else                                     fputc(*c++, fp);
+        }
+        fputc('\n', fp);
+    }
+}
+
+bool kit_cli_completion_script(FILE *fp, const char *program, const char *shell,
+                               KitError *err) {
+    static const struct {
+        const char        *shell;
+        const char *const *lines;
+    } scripts[] = {
+        { "bash",       kit__cli_script_bash       },
+        { "zsh",        kit__cli_script_zsh        },
+        { "fish",       kit__cli_script_fish       },
+        { "powershell", kit__cli_script_powershell },
+    };
+
+    const char *const *lines = NULL;
+    for (size_t i = 0; shell && i < KIT_COUNTOF(scripts); i++)
+        if (strcmp(shell, scripts[i].shell) == 0) lines = scripts[i].lines;
+    if (!lines && !shell)
+        return kit_error_set(err, KIT_ERR_INVALID,
+                             "no shell named, expected bash, zsh, fish or powershell");
+    if (!lines)
+        return kit_error_set(err, KIT_ERR_INVALID,
+                             "unknown shell '%s', expected bash, zsh, fish or powershell", shell);
+
+    /* What a program started with an empty argv hands over. */
+    if (!program || !*program)
+        return kit_error_set(err, KIT_ERR_INVALID, "cannot complete a program with no name");
+
+    /* The command a person types: the file name, minus the ".exe" Windows adds
+     * and PowerShell lets them leave out. */
+    const char *base = kit_path_basename(program);
+    size_t      len  = strlen(base);
+    if (len > 4 && kit_str_eq_nocase(kit_str_from(base + len - 4), KIT_STR_LIT(".exe")))
+        len -= 4;
+
+    bool ok = len > 0;
+    for (size_t i = 0; i < len && ok; i++) ok = kit__cli_name_char(base[i]);
+    if (!ok) {
+        return kit_error_set(err, KIT_ERR_INVALID,
+                             "cannot complete a program named '%s': the scripts hold the "
+                             "name bare, so it may only use letters, digits and . _ + -",
+                             base);
+    }
+
+    KitBuf name = KIT_ZEROED, id = KIT_ZEROED;
+    for (size_t i = 0; i < len; i++) {
+        char c = base[i];
+        kit_buf_append_char(&name, c);
+        kit_buf_append_char(&id, c == '-' || c == '.' || c == '+' ? '_' : c);
+    }
+    kit__cli_write_script(fp, lines, kit_buf_cstr(&name), kit_buf_cstr(&id));
+    kit_buf_free(&name);
+    kit_buf_free(&id);
     return true;
 }
 

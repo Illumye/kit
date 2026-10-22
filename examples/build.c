@@ -33,6 +33,8 @@
  *   ./build --color=never     a plain log, for a CI job
  *   ./build run -- Ada Alan   build, then greet two people
  *   ./build clean             remove the build directory
+ *
+ *   eval "$(./build completion bash)"   TAB completes ./build from now on
  */
 
 #define KIT_IMPLEMENTATION
@@ -194,7 +196,8 @@ static bool clean(KitError *err) {
 int main(int argc, char **argv) {
     const char *prog = kit_cli_shift(&argc, &argv);
 
-    bool       verbose = false, help = false, do_run = false, do_clean = false;
+    bool       verbose = false, help = false;
+    bool       do_run  = false, do_clean = false, do_completion = false;
     int        color   = KIT_LOG_COLOR_AUTO;
     KitCliArgs passed  = KIT_ZEROED;
 
@@ -209,6 +212,7 @@ int main(int argc, char **argv) {
         KIT_CLI_FLAG        ('h', "help",    "Show this help",     &help),
         KIT_CLI_COMMAND     ("run",   "Build, then run the program", run_opts, &do_run),
         KIT_CLI_COMMAND_BARE("clean", "Remove the build directory",            &do_clean),
+        KIT_CLI_COMMAND_BARE("completion", "Print the TAB completion for a shell", &do_completion),
     };
 
     /* A shell asking what TAB should offer gets its answer from the same
@@ -228,9 +232,20 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* Neither command takes an argument of its own. One typed anyway after
-     * run was most likely meant for the program, and running it without the
-     * argument would hide the mistake. */
+    /* completion takes the name of a shell and prints what that shell
+     * evaluates to send every TAB on a build command line back here. */
+    if (do_completion) {
+        KitError err = KIT_ZEROED;
+        bool     ok  = argc <= 1
+            ? kit_cli_completion_script(stdout, prog, argc == 1 ? argv[0] : NULL, &err)
+            : kit_error_set(&err, KIT_ERR_INVALID, "unexpected '%s' after the shell", argv[1]);
+        if (!ok) KIT_ERROR("%s", err.message);
+        return ok ? 0 : 1;
+    }
+
+    /* Neither run nor clean takes an argument of its own. One typed anyway
+     * after run was most likely meant for the program, and running it
+     * without the argument would hide the mistake. */
     if (argc > 0) {
         KIT_ERROR("unexpected '%s'%s", argv[0],
                   do_run ? ": what the program receives goes after --" : "");

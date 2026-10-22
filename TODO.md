@@ -153,6 +153,25 @@ compiler accepts. `-pedantic` says so; nothing else does.
 both yield two fields. Distinguishing them needs a state bit hidden inside the
 `KitStr`, which costs more than it is worth.
 
+**Completion knows options and commands, not positional arguments.** A
+table describes what a command takes after a dash and which commands follow
+it, never what its plain arguments are, so every positional argument is
+completed as a file name: `build completion <TAB>` offers files where only
+four shell names fit. Describing the arguments a command takes is the step
+after this one. A value attached to a short option, as in `-ofile`, gets no
+file names either, since no shell completes inside such a word.
+
+**bash shows no descriptions.** zsh, fish and PowerShell print each
+candidate's help beside it. bash has no place for one, and the tricks that
+fake it, padding the candidates into columns, belong in bash-completion
+rather than in a script every program prints.
+
+**fish and PowerShell completion are exercised by continuous integration
+only.** Neither shell is installed on this machine, so `make
+check-completion` skips them here and names them as skipped; bash and zsh
+run on every `make test-all`. The scripts for the two others are checked by
+the push that carries a change to them, Windows PowerShell 5.1 included.
+
 **`kit_array_contains` needs GNU statement expressions.** It is compiled out on MSVC,
 where `kit_array_find` is the portable equivalent. An expression-valued macro
 cannot be written without them.

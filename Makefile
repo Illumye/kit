@@ -41,7 +41,7 @@ WINE     ?= wine
 WIN_BIN  := $(patsubst tests/%.c,tests/win_%.exe,$(TEST_SRC))
 
 .PHONY: all test test-asan test-all examples check-c11 check-namespace check-cxx \
-        check-examples check-windows fuzz fuzz-build clean
+        check-examples check-completion check-windows fuzz fuzz-build clean
 
 all: test
 
@@ -82,7 +82,7 @@ check-c11:
 	@rm -f .compile-check.c
 	@echo "strict C11 compile: ok"
 
-test-all: check-c11 check-namespace check-cxx test test-asan check-examples
+test-all: check-c11 check-namespace check-cxx test test-asan check-examples check-completion
 
 # --- namespace -----------------------------------------------------------------
 # Two sides of the same promise. check_namespace.sh fails if the header adds a
@@ -196,6 +196,15 @@ check-examples: $(EXAMPLE_BIN)
 	   | grep -q '20 lines written'
 	@rm -rf build/journal
 	@./tests/check_coverage.sh
+
+# --- completion ----------------------------------------------------------------
+# The scripts examples/build prints, run by the shells themselves: typed into
+# an interactive bash and zsh, asked of fish and PowerShell. A shell that is
+# not installed is skipped and named, so a green run says what it covered.
+
+check-completion: examples/build
+	@command -v python3 > /dev/null || { echo "check-completion: python3 not found, skipped"; exit 0; }; \
+	 python3 tests/check_completion.py
 
 clean:
 	rm -f $(TEST_BIN) $(TEST_ASAN) $(WIN_BIN) $(FUZZ_BIN) tests/run_test_cxx tests/run_coexistence \

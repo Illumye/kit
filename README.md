@@ -42,7 +42,7 @@ new one.
 | Arena | `kit_arena`, `kit_scratch` | Bump allocation over chained regions, and per-thread scratch |
 | Timer | `kit_timer` | Monotonic timing |
 | Vectors | `kit_vec2`, `kit_vec3` | 2D and 3D vector maths |
-| Command line | `kit_cli` | Options, choices and commands in one table, what follows `--` kept apart, generated usage |
+| Command line | `kit_cli` | Options, choices and commands in one table, generated usage, TAB completion in four shells |
 | Buffers | `kit_buf` | Growable text buffer with `printf` formatting |
 | Processes | `kit_command`, `kit_process` | Run a child, wait for it, or capture either stream |
 | Map | `kit_map` | String keys, open addressing |
@@ -132,6 +132,47 @@ The type of the operation is the type of the destination: `int`, `long`,
 `long long` and their unsigned counterparts, which is also `size_t`,
 `ptrdiff_t` and the fixed-width types, whichever of the six each one is here.
 
+## Command lines, and TAB completion
+
+A command line is a table: options, values chosen from a list, and commands
+that each carry a table of their own, which is the shape of git and cargo.
+
+```c
+KitCliOpt run_opts[] = {
+    KIT_CLI_FLAG('r', "release", "Build with optimisations", &release),
+    KIT_CLI_REST("ARGS", "Handed to the program", &passed),
+};
+KitCliOpt opts[] = {
+    KIT_CLI_FLAG        ('v', "verbose", "Say more", &verbose),
+    KIT_CLI_CHOICE      (0,   "color", "auto|always|never", "When to use colour", &color),
+    KIT_CLI_COMMAND     ("run",   "Build it, then run it", run_opts, &run),
+    KIT_CLI_COMMAND_BARE("clean", "Remove what was built", &clean),
+};
+
+if (kit_cli_complete_arr(stdout, opts, argc, argv)) return 0;
+if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) { ... }
+```
+
+`tool -v run --release -- --port 8080` sets three bools and hands the last two
+words to `passed`, apart from the command's own arguments. The options of the
+enclosing table stay valid inside a command, and the usage follows the
+command the line named.
+
+The same tables answer the shell's TAB. `kit_cli_completion_script` prints
+the few lines that connect a shell to the program, and a person installs them
+once:
+
+```sh
+eval "$(tool completion bash)"                               # ~/.bashrc
+eval "$(tool completion zsh)"                                # ~/.zshrc, after compinit
+tool completion fish > ~/.config/fish/completions/tool.fish
+tool completion powershell | Out-String | Invoke-Expression   # $PROFILE
+```
+
+From then on the program completes itself: its commands, its options with
+their help beside them, the values of a choice, and file names where a file
+belongs. `tool __complete run --r` prints what TAB would offer.
+
 ## A taste of it
 
 ```c
@@ -173,12 +214,13 @@ make check-c11       # strict -std=c11 -Werror, with and without vector maths
 make check-namespace # nothing unprefixed leaks, and common names still coexist
 make check-cxx       # the same header from C++17, implementation included
 make check-examples  # build and drive the example programs
+make check-completion # TAB typed into bash and zsh, asked of fish and PowerShell
 make test-all        # all of the above
 make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 217 tests over seventeen files, and the header compiles warning-free
+The suite is 219 tests over seventeen files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 
@@ -193,7 +235,7 @@ tests, which is where exhaustiveness belongs.
 
 | Example | What it does | What it leans on |
 |---|---|---|
-| `build.c` | Compiles `examples/demo`, rebuilding on content, and runs it | commands, filesystem, processes, glob, SHA-256 |
+| `build.c` | Compiles `examples/demo`, rebuilding on content, and runs it | commands and completion, filesystem, processes, glob, SHA-256 |
 | `config.c` | Reads an INI file into a map | strings, map, arena, errors with context |
 | `journal.c` | Rotates a log file when it grows | filesystem writes, logger configuration, error codes |
 | `orbit.c` | Steps a few bodies around a centre | vectors, scalar maths, arena, timer |

@@ -1041,6 +1041,70 @@ TEST(cli_complete_keeps_each_description_to_one_line) {
     CHECK_ANSWER("--odd\tFirst line\n:none\n", "--");
 }
 
+/* The script for one shell and one program name, as a heap string, or NULL
+ * when it was refused. */
+static char *script_text(const char *program, const char *shell, KitError *err) {
+    const char *path = "utest-tmp-script.txt";
+    FILE       *fp   = fopen(path, "wb");
+    if (!fp) return NULL;
+    bool written = kit_cli_completion_script(fp, program, shell, err);
+    fclose(fp);
+    char *text = kit_fs_read(path, NULL);
+    remove(path);
+    if (!written) {
+        CHECK_STR(text, "");
+        free(text);
+        return NULL;
+    }
+    return text;
+}
+
+TEST(cli_completion_script_registers_the_command_as_typed) {
+    /* A path is cut to the file name, the ".exe" goes, and the function the
+     * script defines takes a name a shell accepts. */
+    struct { const char *shell, *registers; } expected[] = {
+        { "bash",       "complete -o nosort -F __kit_complete_my_tool my-tool" },
+        { "zsh",        "compdef _my_tool my-tool" },
+        { "fish",       "complete -c my-tool -f -k -a '(__kit_complete_my_tool)'" },
+        { "powershell", "-CommandName 'my-tool', 'my-tool.exe'" },
+    };
+    for (size_t i = 0; i < KIT_COUNTOF(expected); i++) {
+        KitError err  = KIT_ZEROED;
+        char    *text = script_text("/usr/local/bin/my-tool.EXE", expected[i].shell, &err);
+        if (!CHECK(text != NULL)) continue;
+        CHECK(strstr(text, expected[i].registers) != NULL);
+        CHECK(strstr(text, "__complete") != NULL);
+        CHECK(strstr(text, "@NAME@") == NULL);      /* every placeholder filled */
+        CHECK(strstr(text, "@ID@") == NULL);
+        free(text);
+    }
+}
+
+TEST(cli_completion_script_refuses_what_it_cannot_write) {
+    KitError err = KIT_ZEROED;
+    CHECK(script_text("tool", "tcsh", &err) == NULL);
+    CHECK(failed_with(&err, KIT_ERR_INVALID,
+                      "unknown shell 'tcsh', expected bash, zsh, fish or powershell"));
+
+    kit_error_clear(&err);
+    CHECK(script_text("tool", NULL, &err) == NULL);
+    CHECK(failed_with(&err, KIT_ERR_INVALID, "no shell named"));
+
+    /* The scripts hold the name bare, so a space or a quote has no place. */
+    kit_error_clear(&err);
+    CHECK(script_text("my tool", "bash", &err) == NULL);
+    CHECK(failed_with(&err, KIT_ERR_INVALID, "cannot complete a program named 'my tool'"));
+
+    /* Nothing to register at all, which is what a program started with an
+     * empty argv hands over. */
+    kit_error_clear(&err);
+    CHECK(script_text(NULL, "zsh", &err) == NULL);
+    CHECK(failed_with(&err, KIT_ERR_INVALID, "cannot complete a program with no name"));
+    kit_error_clear(&err);
+    CHECK(script_text("", "fish", &err) == NULL);
+    CHECK(failed_with(&err, KIT_ERR_INVALID, "cannot complete a program with no name"));
+}
+
 /* --- stopwatch ------------------------------------------------------------ */
 
 TEST(timer_measures_forward) {
@@ -1145,6 +1209,8 @@ int main(int argc, char **argv) {
     RUN(cli_usage_follows_the_command_the_parse_chose);
     RUN(cli_complete_offers_what_the_tables_allow);
     RUN(cli_complete_keeps_each_description_to_one_line);
+    RUN(cli_completion_script_registers_the_command_as_typed);
+    RUN(cli_completion_script_refuses_what_it_cannot_write);
     RUN(timer_measures_forward);
     RUN(scalar_helpers);
     RUN(vector_helpers);
