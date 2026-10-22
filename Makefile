@@ -154,6 +154,8 @@ check-examples: $(EXAMPLE_BIN)
 	@./examples/build run -- Ada --Alan 2>&1 | grep -q '^hello, --Alan$$'
 	@./examples/build run Ada 2>&1 | grep -q "unexpected 'Ada': what the program receives goes after --"
 	@./examples/build run -h | grep -qF -e '-- <ARGS>...'
+	@./examples/build __complete --color=n | grep -q '^--color=never$$'
+	@./examples/build __complete run -- '' | grep -q '^:files$$'
 	@./examples/build    2>&1 | grep -q '0 file(s) compiled'
 	@./examples/build --color=always 2>&1 | grep -q "$$(printf '\033')"
 	@! ./examples/build --color=never 2>&1 | grep -q "$$(printf '\033')"

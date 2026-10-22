@@ -776,6 +776,18 @@ TEST(cli_commands_nest_to_a_bound) {
     char *text = usage_text(loop, KIT_COUNTOF(loop));
     if (CHECK(text != NULL)) CHECK(strstr(text, "Usage: tool again again ") != NULL);
     free(text);
+
+    /* So does completion, which reads the line through the same chain. */
+    {   ARGV("__complete", "again", "again", "again", "again", "again", "again", "again",
+             "again", "again", "again", "again", "again", "again", "again", "again",
+             "again", "again", "again", "again", "ag");
+        FILE *sink = fopen("utest-tmp-complete.txt", "wb");
+        if (CHECK(sink != NULL)) {
+            CHECK(kit_cli_complete(sink, loop, KIT_COUNTOF(loop), argc, argv));
+            fclose(sink);
+        }
+        remove("utest-tmp-complete.txt");
+    }
 }
 
 TEST(cli_rest_keeps_apart_what_follows_the_double_dash) {
@@ -915,6 +927,120 @@ TEST(cli_usage_follows_the_command_the_parse_chose) {
     free(text);
 }
 
+/* --- shell completion ----------------------------------------------------- */
+
+/* What kit_cli_complete answers to a request, as a heap string, or NULL when
+ * it declined the line, which it must do without writing anything. */
+static char *answer(const KitCliOpt *opts, size_t n_opts, int argc, char **argv) {
+    const char *path = "utest-tmp-complete.txt";
+    FILE       *fp   = fopen(path, "wb");
+    if (!fp) return NULL;
+    bool handled = kit_cli_complete(fp, opts, n_opts, argc, argv);
+    fclose(fp);
+    char *text = kit_fs_read(path, NULL);
+    remove(path);
+    if (!handled) {
+        CHECK_STR(text, "");
+        free(text);
+        return NULL;
+    }
+    return text;
+}
+
+/* The request on the left, the exact answer on the right. */
+#define CHECK_ANSWER(expected, ...)                                     \
+    do {                                                                \
+        ARGV("__complete", __VA_ARGS__);                                \
+        char *got = answer(opts, KIT_COUNTOF(opts), argc, argv);        \
+        CHECK_STR(got, expected);                                       \
+        free(got);                                                      \
+    } while (0)
+
+TEST(cli_complete_offers_what_the_tables_allow) {
+    bool        verbose = false, recurse = false, release = false, build = false, run = false;
+    int         jobs = 1, color = 0;
+    const char *output = "a.out";
+    KitCliArgs  passed = KIT_ZEROED;
+
+    KitCliOpt build_opts[] = {
+        KIT_CLI_FLAG('r', "release", "Build with optimisations", &release),
+        KIT_CLI_STR ('o', "output",  "FILE", "Where to write", &output),
+        KIT_CLI_INT ('j', "jobs",    "N", "How many at once", &jobs),
+    };
+    KitCliOpt run_opts[] = {
+        KIT_CLI_REST("ARGS", "Handed to the program", &passed),
+    };
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG   ('v', "verbose", "Say more",  &verbose),
+        KIT_CLI_FLAG   ('r', "recurse", "Go deeper", &recurse),
+        KIT_CLI_CHOICE (0,   "color", "auto|always|never", "When to use colour", &color),
+        KIT_CLI_COMMAND("build", "Compile it", build_opts, &build),
+        KIT_CLI_COMMAND("run",   "Run it",     run_opts,   &run),
+    };
+
+    /* Where a command is due: the commands, narrowed by what is typed. No
+     * word at all is the same as an empty one. */
+    CHECK_ANSWER("build\tCompile it\nrun\tRun it\n:none\n", "");
+    CHECK_ANSWER("run\tRun it\n:none\n", "ru");
+    {   ARGV("__complete");
+        char *got = answer(opts, KIT_COUNTOF(opts), argc, argv);
+        CHECK_STR(got, "build\tCompile it\nrun\tRun it\n:none\n");
+        free(got);
+    }
+
+    /* After two dashes the long names, after one the short ones as well. */
+    CHECK_ANSWER("--verbose\tSay more\n--recurse\tGo deeper\n--color\tWhen to use colour\n:none\n",
+                 "--");
+    CHECK_ANSWER("--color\tWhen to use colour\n:none\n", "--c");
+    CHECK_ANSWER("--verbose\tSay more\n-v\tSay more\n--recurse\tGo deeper\n-r\tGo deeper\n"
+                 "--color\tWhen to use colour\n:none\n", "-");
+
+    /* Inside a command, its own options come first, then those it inherits
+     * under the names still theirs: build's -r hides the root's. */
+    CHECK_ANSWER("--release\tBuild with optimisations\n-r\tBuild with optimisations\n"
+                 "--output\tWhere to write\n-o\tWhere to write\n"
+                 "--jobs\tHow many at once\n-j\tHow many at once\n"
+                 "--verbose\tSay more\n-v\tSay more\n--recurse\tGo deeper\n"
+                 "--color\tWhen to use colour\n:none\n", "build", "-");
+
+    /* A choice offers its values, after a space or after "=". */
+    CHECK_ANSWER("auto\nalways\nnever\n:none\n", "--color", "");
+    CHECK_ANSWER("auto\nalways\n:none\n", "--color", "a");
+    CHECK_ANSWER("--color=always\n:none\n", "--color=al");
+
+    /* A string takes file names, a number nothing. */
+    CHECK_ANSWER(":files\n", "build", "-o", "");
+    CHECK_ANSWER(":files\n", "build", "--output=b");
+    CHECK_ANSWER(":none\n", "build", "--jobs", "");
+    CHECK_ANSWER(":none\n", "build", "-j");
+    CHECK_ANSWER(":none\n", "build", "-rj4");
+
+    /* A value is never taken for a command, and a command's own positional
+     * arguments are file names. */
+    CHECK_ANSWER("build\tCompile it\nrun\tRun it\n:none\n", "--color", "never", "");
+    CHECK_ANSWER(":files\n", "build", "");
+
+    /* Past "--", every word is the program's: file names, dashes or not. */
+    CHECK_ANSWER(":files\n", "run", "--", "");
+    CHECK_ANSWER(":files\n", "run", "--", "--c");
+
+    /* Words the parser would refuse do not stop the answer. */
+    CHECK_ANSWER("build\tCompile it\n:none\n", "biuld", "--nope", "-zz", "bu");
+
+    /* Not a request: the caller carries on, and nothing was written. */
+    {   ARGV("build", "--c");
+        CHECK(answer(opts, KIT_COUNTOF(opts), argc, argv) == NULL);
+    }
+}
+
+TEST(cli_complete_keeps_each_description_to_one_line) {
+    bool      odd = false;
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG(0, "odd", "First line\nsecond line", &odd),
+    };
+    CHECK_ANSWER("--odd\tFirst line\n:none\n", "--");
+}
+
 /* --- stopwatch ------------------------------------------------------------ */
 
 TEST(timer_measures_forward) {
@@ -1017,6 +1143,8 @@ int main(int argc, char **argv) {
     RUN(cli_rest_keeps_apart_what_follows_the_double_dash);
     RUN(cli_usage_without_commands_is_unchanged);
     RUN(cli_usage_follows_the_command_the_parse_chose);
+    RUN(cli_complete_offers_what_the_tables_allow);
+    RUN(cli_complete_keeps_each_description_to_one_line);
     RUN(timer_measures_forward);
     RUN(scalar_helpers);
     RUN(vector_helpers);

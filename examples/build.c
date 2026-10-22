@@ -211,6 +211,10 @@ int main(int argc, char **argv) {
         KIT_CLI_COMMAND_BARE("clean", "Remove the build directory",            &do_clean),
     };
 
+    /* A shell asking what TAB should offer gets its answer from the same
+     * tables, and nothing else happens: no build for a keystroke. */
+    if (kit_cli_complete_arr(stdout, opts, argc, argv)) return 0;
+
     /* The location field is noise for a build log, and for a mistake on the
      * command line it would point into kit.h. */
     kit_log_set_fields(KIT_LOG_FIELD_TIME | KIT_LOG_FIELD_LEVEL);

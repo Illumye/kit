@@ -1263,6 +1263,43 @@ void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t 
 #define kit_cli_usage_arr(fp, prog, opts) \
     kit_cli_usage((fp), (prog), (opts), KIT_COUNTOF(opts))
 
+/* -- Shell completion --------------------------------------------------------
+ *
+ * The program completes itself: on TAB, a small function in the shell runs it
+ * again with the words typed so far, and shows what it answers. The answer
+ * comes from the same tables as the parse, so the two cannot drift apart, and
+ * the help texts become the descriptions shown beside each candidate.
+ *
+ *   if (kit_cli_complete_arr(stdout, opts, argc, argv)) return 0;
+ *   if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) ...
+ *
+ * The call comes before anything else main does, since a request must have
+ * no effect beyond its answer. Both are plain text, which is also how to see
+ * what TAB will offer:
+ *
+ *   $ tool __complete run --r
+ *   --release	Build with optimisations
+ *   :none
+ *
+ * A request is the word __complete, then the words that follow the program
+ * name up to the cursor, the last one being the word under it: empty when
+ * the cursor follows a space. The answer is one candidate per line, with its
+ * description after a tab when it has one, then a last line for the shell:
+ * ":files" when file names belong there too, ":none" when they do not.
+ *
+ * Offered: the commands where a command is due, the options after a dash, a
+ * choice's values, file names for a string and for what follows "--", and
+ * nothing for a number.
+ * -------------------------------------------------------------------------- */
+
+/* Answers a completion request on fp and returns true, or returns false at
+ * once when the line is not one. The words are read against the tables but
+ * never parsed into them: no destination is written. */
+bool kit_cli_complete(FILE *fp, const KitCliOpt *opts, size_t n_opts, int argc, char **argv);
+
+#define kit_cli_complete_arr(fp, opts, argc, argv) \
+    kit_cli_complete((fp), (opts), KIT_COUNTOF(opts), (argc), (argv))
+
 /* --------------------------------------------------------------------------
  * SECTION 10 : BUFFERS
  * -------------------------------------------------------------------------- */
@@ -3967,6 +4004,168 @@ void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t 
 
     kit_buf_free(&invocation);
     kit_buf_free(&left);
+}
+
+/* The word a shell sends first to ask for candidates rather than for work. */
+#define KIT__CLI_REQUEST "__complete"
+
+static bool kit__cli_takes_value(const KitCliOpt *o) {
+    return o->type == KIT_CLI_OPT_STR || o->type == KIT_CLI_OPT_INT ||
+           o->type == KIT_CLI_OPT_CHOICE;
+}
+
+static bool kit__cli_starts_with(const char *text, const char *prefix) {
+    return strncmp(text, prefix, strlen(prefix)) == 0;
+}
+
+/* One candidate per line, the description after a tab. A description is one
+ * line: anything past a newline would read as candidates of its own. */
+static void kit__cli_offer(FILE *fp, const char *head, const char *word, const char *help) {
+    fprintf(fp, "%s%s", head, word);
+    if (help && *help) fprintf(fp, "\t%.*s", (int)strcspn(help, "\n"), help);
+    fputc('\n', fp);
+}
+
+/* Every option in force whose name starts with what is typed, innermost table
+ * first, under the names nothing nearer has taken over: an entry is offered
+ * only when looking its name up leads back to it. A lone dash asks for the
+ * short forms as well. */
+static void kit__cli_offer_options(FILE *fp, const Kit__CliScope *scope, const char *typed) {
+    const char *wanted = typed[1] == '-' ? typed + 2 : "";
+    bool        shorts = typed[1] == '\0';
+    char        short_form[3] = { '-', 0, 0 };
+
+    for (size_t d = scope->depth; d-- > 0; ) {
+        for (size_t i = 0; i < scope->counts[d]; i++) {
+            const KitCliOpt *o = &scope->tables[d][i];
+            if (!kit__cli_is_option(o)) continue;
+
+            if (o->long_name && kit__cli_starts_with(o->long_name, wanted) &&
+                kit__cli_find_long(scope, o->long_name, strlen(o->long_name)) == o)
+                kit__cli_offer(fp, "--", o->long_name, o->help);
+
+            if (shorts && o->short_name && kit__cli_find_short(scope, o->short_name) == o) {
+                short_form[1] = o->short_name;
+                kit__cli_offer(fp, "", short_form, o->help);
+            }
+        }
+    }
+}
+
+static void kit__cli_offer_commands(FILE *fp, const KitCliOpt *opts, size_t n_opts,
+                                    const char *typed) {
+    for (size_t i = 0; i < n_opts; i++)
+        if (opts[i].type == KIT_CLI_OPT_COMMAND && opts[i].long_name &&
+            kit__cli_starts_with(opts[i].long_name, typed))
+            kit__cli_offer(fp, "", opts[i].long_name, opts[i].help);
+}
+
+/* What can stand as the value of an option. `head` is what the word holds
+ * before the value, "--color=" or "-c", which every candidate repeats since
+ * the shell replaces the whole word. Returns the line for the shell. */
+static const char *kit__cli_offer_value(FILE *fp, const KitCliOpt *o, const char *head,
+                                        int head_len, const char *typed) {
+    if (o->type == KIT_CLI_OPT_STR) return ":files";
+    if (o->type != KIT_CLI_OPT_CHOICE) return ":none";
+
+    KitStr choices = kit_str_from(o->meta ? o->meta : ""), choice;
+    while (kit_str_next(&choices, '|', &choice))
+        if (choice.count > 0 && kit_str_starts_with_cstr(choice, typed))
+            fprintf(fp, "%.*s" KIT_STR_FMT "\n", head_len, head, KIT_STR_ARG(choice));
+    return ":none";
+}
+
+/* The option a word leaves waiting for its value in the next word, if any:
+ * --name without "=", or a group whose last letter takes a value. */
+static const KitCliOpt *kit__cli_waiting(const Kit__CliScope *scope, const char *word) {
+    if (word[1] == '-') {
+        if (strchr(word, '=')) return NULL;
+        const KitCliOpt *o = kit__cli_find_long(scope, word + 2, strlen(word + 2));
+        return o && kit__cli_takes_value(o) ? o : NULL;
+    }
+    for (const char *c = word + 1; *c; c++) {
+        const KitCliOpt *o = kit__cli_find_short(scope, *c);
+        if (!o) return NULL;
+        if (kit__cli_takes_value(o)) return c[1] == '\0' ? o : NULL;
+    }
+    return NULL;
+}
+
+/* The word under the cursor starts with a dash: the name of an option, or a
+ * value already attached to one. */
+static const char *kit__cli_complete_dash(FILE *fp, const Kit__CliScope *scope,
+                                          const char *typed) {
+    if (typed[1] == '\0' || (typed[1] == '-' && !strchr(typed, '='))) {
+        kit__cli_offer_options(fp, scope, typed);
+        return ":none";
+    }
+
+    if (typed[1] == '-') {
+        const char      *eq = strchr(typed, '=');
+        const KitCliOpt *o  = kit__cli_find_long(scope, typed + 2, (size_t)(eq - typed - 2));
+        if (!o || !kit__cli_takes_value(o)) return ":none";
+        return kit__cli_offer_value(fp, o, typed, (int)(eq + 1 - typed), eq + 1);
+    }
+
+    /* A group: the value starts after the first letter that takes one. */
+    for (const char *c = typed + 1; *c; c++) {
+        const KitCliOpt *o = kit__cli_find_short(scope, *c);
+        if (!o) break;
+        if (!kit__cli_takes_value(o)) continue;
+        if (c[1] == '\0') break;            /* the value is the next word */
+        const char *value = c[1] == '=' ? c + 2 : c + 1;
+        return kit__cli_offer_value(fp, o, typed, (int)(value - typed), value);
+    }
+    return ":none";
+}
+
+bool kit_cli_complete(FILE *fp, const KitCliOpt *opts, size_t n_opts, int argc, char **argv) {
+    if (argc < 1 || strcmp(argv[0], KIT__CLI_REQUEST) != 0) return false;
+
+    /* The last word is the one under the cursor, and no word at all is an
+     * empty one: what a shell sends when the line ends on a space. */
+    int         n_before = argc > 1 ? argc - 2 : 0;
+    const char *typed    = argc > 1 ? argv[argc - 1] : "";
+
+    /* The words before it are walked the way the parser walks them, minus
+     * every assignment and every error: a line still being typed is wrong
+     * often, and what it already says is still worth reading. */
+    Kit__CliScope    scope;
+    const KitCliOpt *waiting = NULL;
+    bool             rest    = false;
+    kit__cli_scope_init(&scope, opts, n_opts);
+
+    for (int i = 1; i <= n_before && !rest; i++) {
+        const char *word = argv[i];
+        if (waiting) {
+            waiting = NULL;
+        } else if (strcmp(word, "--") == 0) {
+            rest = true;
+        } else if (word[0] == '-' && word[1] != '\0') {
+            waiting = kit__cli_waiting(&scope, word);
+        } else {
+            const KitCliOpt *here    = scope.tables[scope.depth - 1];
+            const KitCliOpt *command = kit__cli_command_in(here, scope.counts[scope.depth - 1], word);
+            if (command) kit__cli_scope_push(&scope, command);
+        }
+    }
+
+    const char *directive = ":none";
+    if (rest) {
+        directive = ":files";
+    } else if (waiting) {
+        directive = kit__cli_offer_value(fp, waiting, "", 0, typed);
+    } else if (typed[0] == '-') {
+        directive = kit__cli_complete_dash(fp, &scope, typed);
+    } else {
+        const KitCliOpt *here   = scope.tables[scope.depth - 1];
+        size_t           n_here = scope.counts[scope.depth - 1];
+        if (kit__cli_has_commands(here, n_here)) kit__cli_offer_commands(fp, here, n_here, typed);
+        else                                     directive = ":files";
+    }
+
+    fprintf(fp, "%s\n", directive);
+    return true;
 }
 
 /* --------------------------------------------------------------------------
