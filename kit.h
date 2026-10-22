@@ -1278,7 +1278,7 @@ void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t 
  * what TAB will offer:
  *
  *   $ tool __complete run --r
- *   --release	Build with optimisations
+ *   --release\tBuild with optimisations
  *   :none
  *
  * A request is the word __complete, then the words that follow the program
