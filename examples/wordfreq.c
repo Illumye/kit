@@ -125,25 +125,30 @@ static int by_count_then_word(const void *a, const void *b) {
 int main(int argc, char **argv) {
     const char *prog = kit_cli_shift(&argc, &argv);
 
-    int  top = 10, bench = 0;
-    bool help = false, keep_stop_words = false;
+    int         top = 10, bench = 0;
+    bool        help = false, keep_stop_words = false;
+    const char *path = NULL;
     KitCliOpt opts[] = {
         KIT_CLI_INT ('n', "top", "N", "How many words to print", &top),
         KIT_CLI_INT ('b', "bench", "N", "Time the counting pass N times", &bench),
         KIT_CLI_FLAG('s', "stop-words", "Count the common words too", &keep_stop_words),
-        KIT_CLI_FLAG('h', "help", "Show this help", &help),
+        KIT_CLI_HELP('h', "help", "Show this help", &help),
+        KIT_CLI_ARG ("FILE", "The text to count the words of", &path),
     };
-    if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) return 1;
-    if (help || argc != 1) {
-        kit_cli_usage_arr(stdout, prog, opts);
-        return help ? 0 : 1;
-    }
 
     kit_log_set_fields(KIT_LOG_FIELD_LEVEL);
+    if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) {
+        kit_cli_usage_arr(stderr, prog, opts);
+        return 1;
+    }
+    if (help) {
+        kit_cli_usage_arr(stdout, prog, opts);
+        return 0;
+    }
 
     KitError err  = KIT_ZEROED;
     size_t   size = 0;
-    char    *text = kit_fs_read_sized(argv[0], &size, &err);
+    char    *text = kit_fs_read_sized(path, &size, &err);
     if (!text) {
         KIT_ERROR("%s", err.message);
         return 1;

@@ -114,41 +114,53 @@ static bool in_parallel(const char *program, KitError *err) {
     return ok;
 }
 
+/* What a named entry takes, read back from the table itself. */
+static const char *kind_of(KitCliOptType type) {
+    switch (type) {
+    case KIT_CLI_OPT_FLAG:
+    case KIT_CLI_OPT_HELP: return "a switch";
+    case KIT_CLI_OPT_INT:  return "a number";
+    default:               return "a string";
+    }
+}
+
 int main(int argc, char **argv) {
     const char *prog = kit_cli_shift(&argc, &argv);
 
-    bool check = false, merged = false, help = false;
+    bool       check = false, merged = false, help = false;
+    KitCliArgs words = KIT_ZEROED;
     KitCliOpt opts[] = {
         KIT_CLI_FLAG('c', "check",  "Report on each program named",   &check),
         KIT_CLI_FLAG('m', "merged", "Capture both streams as one",    &merged),
-        KIT_CLI_FLAG('h', "help",   "Show this help",                 &help),
+        KIT_CLI_HELP('h', "help",   "Show this help",                 &help),
+        KIT_CLI_ARGS_REQUIRED("PROGRAM",
+                              "The program to run and what it is given, or with -c, "
+                              "the programs to look for", &words),
     };
 
     /* The long form, rather than the _arr macro: the same call, with the count
      * spelled out. */
+    kit_log_set_fields(KIT_LOG_FIELD_LEVEL);
     if (!kit_cli_parse(opts, KIT_COUNTOF(opts), &argc, &argv, NULL)) {
         kit_cli_usage(stderr, prog, opts, KIT_COUNTOF(opts));
         return 1;
     }
-    if (help || argc == 0) {
+    if (help) {
         kit_cli_usage(stdout, prog, opts, KIT_COUNTOF(opts));
 
         /* The table is data, so a program can read it back. */
-        printf("\n%zu options, by kind:\n", KIT_COUNTOF(opts));
+        printf("\n%zu entries, by kind:\n", KIT_COUNTOF(opts));
         for (size_t i = 0; i < KIT_COUNTOF(opts); i++) {
-            KitCliOptType kind = opts[i].type;
-            printf("  -%c  %s\n", opts[i].short_name,
-                   kind == KIT_CLI_OPT_FLAG ? "a switch" :
-                   kind == KIT_CLI_OPT_INT  ? "a number" : "a string");
+            const KitCliOpt *o = &opts[i];
+            if (o->arity == KIT_CLI_ONE_OR_MORE) printf("  <%s>  words, one at least\n", o->meta);
+            else printf("  -%c         %s\n", o->short_name, kind_of(o->type));
         }
-        return help ? 0 : 1;
+        return 0;
     }
 
-    kit_log_set_fields(KIT_LOG_FIELD_LEVEL);
-
     if (check) {
-        printf("checking %d program(s)\n", argc);
-        for (int i = 0; i < argc; i++) probe(argv[i]);
+        printf("checking %zu program(s)\n", words.count);
+        for (size_t i = 0; i < words.count; i++) probe(words.items[i]);
 
         KitError err = KIT_ZEROED;
         if (!in_parallel("true", &err) && err.code != KIT_ERR_NOT_FOUND)
@@ -163,7 +175,7 @@ int main(int argc, char **argv) {
 
     /* Otherwise: run what was asked, and report properly if it fails. */
     KitCommand cmd = KIT_ZEROED;
-    for (int i = 0; i < argc; i++) kit_command_push(&cmd, argv[i]);
+    for (size_t i = 0; i < words.count; i++) kit_command_push(&cmd, words.items[i]);
 
     KitError err = KIT_ZEROED;
     KitBuf   out = KIT_ZEROED;
@@ -183,7 +195,7 @@ int main(int argc, char **argv) {
             lines++;
         }
 
-        kit_error_context(&err, "running %s", argv[0]);
+        kit_error_context(&err, "running %s", words.items[0]);
         KIT_ERROR("%s (%s)", err.message, kit_error_code_name(err.code));
         report_tail(&tail, lines);
     } else {

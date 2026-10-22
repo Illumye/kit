@@ -134,16 +134,18 @@ The type of the operation is the type of the destination: `int`, `long`,
 
 ## Command lines, and TAB completion
 
-A command line is a table: options, values chosen from a list, and commands
-that each carry a table of their own, which is the shape of git and cargo.
+A command line is a table: options, values chosen from a list, the arguments
+that come without a name, and commands that each carry a table of their own,
+which is the shape of git and cargo.
 
 ```c
 KitCliOpt run_opts[] = {
     KIT_CLI_FLAG('r', "release", "Build with optimisations", &release),
+    KIT_CLI_ARG ("TARGET", "What to run", &target),
     KIT_CLI_REST("ARGS", "Handed to the program", &passed),
 };
 KitCliOpt opts[] = {
-    KIT_CLI_FLAG        ('v', "verbose", "Say more", &verbose),
+    KIT_CLI_HELP        ('h', "help", "Show this help", &help),
     KIT_CLI_CHOICE      (0,   "color", "auto|always|never", "When to use colour", &color),
     KIT_CLI_COMMAND     ("run",   "Build it, then run it", run_opts, &run),
     KIT_CLI_COMMAND_BARE("clean", "Remove what was built", &clean),
@@ -153,10 +155,11 @@ if (kit_cli_complete_arr(stdout, opts, argc, argv)) return 0;
 if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) { ... }
 ```
 
-`tool -v run --release -- --port 8080` sets three bools and hands the last two
-words to `passed`, apart from the command's own arguments. The options of the
-enclosing table stay valid inside a command, and the usage follows the
-command the line named.
+`tool run --release server -- --port 8080` sets two bools, stores `server` in
+`target` and hands the last two words to `passed`. Without a target the line
+is refused, "missing <TARGET>", unless it asks for `--help`. The options of
+the enclosing table stay valid inside a command, and the usage follows the
+command the line named, its arguments listed with their help.
 
 The same tables answer the shell's TAB. `kit_cli_completion_script` prints
 the few lines that connect a shell to the program, and a person installs them
@@ -170,8 +173,9 @@ tool completion powershell | Out-String | Invoke-Expression   # $PROFILE
 ```
 
 From then on the program completes itself: its commands, its options with
-their help beside them, the values of a choice, and file names where a file
-belongs. `tool __complete run --r` prints what TAB would offer.
+their help beside them, the values of a choice, whether it is an option or an
+argument, and file names where a file belongs. `tool __complete run --r`
+prints what TAB would offer.
 
 ## A taste of it
 
@@ -220,7 +224,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 219 tests over seventeen files, and the header compiles warning-free
+The suite is 226 tests over seventeen files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 

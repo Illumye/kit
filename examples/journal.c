@@ -131,7 +131,7 @@ int main(int argc, char **argv) {
         KIT_CLI_INT ('n', "lines", "N",    "How many lines",        &lines),
         KIT_CLI_INT ('k', "keep",  "N",    "Old files to keep",     &keep),
         KIT_CLI_FLAG('q', "quiet", "Only complain",                 &quiet),
-        KIT_CLI_FLAG('h', "help",  "Show this help",                &help),
+        KIT_CLI_HELP('h', "help",  "Show this help",                &help),
     };
     if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) return 1;
     if (help) { kit_cli_usage_arr(stdout, prog, opts); return 0; }

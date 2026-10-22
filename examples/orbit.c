@@ -39,7 +39,7 @@ int main(int argc, char **argv) {
         KIT_CLI_INT ('b', "bodies", "N", "How many bodies",     &count),
         KIT_CLI_INT ('s', "steps",  "N", "How many steps",      &steps),
         KIT_CLI_INT ('S', "seed",   "N", "Which configuration", &seed),
-        KIT_CLI_FLAG('h', "help",   "Show this help",           &help),
+        KIT_CLI_HELP('h', "help",   "Show this help",           &help),
     };
     if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) return 1;
     if (help) { kit_cli_usage_arr(stdout, prog, opts); return 0; }

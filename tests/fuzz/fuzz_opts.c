@@ -3,9 +3,10 @@
  * that matter are that it never keeps a pointer it was not given, never
  * reports more arguments than it received, and always terminates.
  *
- * Every input is parsed twice: against a flat table, and against one with
+ * Every input is parsed three times: against a flat table, against one with
  * commands, nested commands and a rest list, where the line is read against
- * a different table at every command it names.
+ * a different table at every command it names, and against one that declares
+ * its positional arguments.
  */
 
 #define KIT_IMPLEMENTATION
@@ -32,7 +33,7 @@ static bool from_input(const char *p, char *const *storage, int count) {
  * the commands the parse chose and must cope with a parse that stopped half
  * way. */
 static void check(KitCliOpt *opts, size_t n_opts, char *const *storage, int count,
-                  const char **str_o, KitCliArgs *rest) {
+                  const char **str_o, KitCliArgs *rest, KitCliArgs *list) {
     char *argv_buf[MAX_ARGS + 1];
     for (int i = 0; i < count; i++) argv_buf[i] = storage[i];
     argv_buf[count] = NULL;
@@ -62,6 +63,13 @@ static void check(KitCliOpt *opts, size_t n_opts, char *const *storage, int coun
             assert(rest->items + rest->count == argv_buf + count);
             assert(rest->items[rest->count] == NULL);
             assert((size_t)argc + rest->count < (size_t)count);   /* "--" itself */
+        }
+
+        /* A positional list is a window on the positional arguments, which
+         * are what argv kept. */
+        if (list && list->items) {
+            assert(list->items >= argv_buf);
+            assert(list->items + list->count <= argv_buf + argc);
         }
     }
 
@@ -107,7 +115,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         KIT_CLI_STR (0,   "only-long", "V",  "l", &str_o),
         KIT_CLI_CHOICE('w', "when", "auto||never", "w", &when),
     };
-    check(flat, KIT_COUNTOF(flat), storage, count, &str_o, NULL);
+    check(flat, KIT_COUNTOF(flat), storage, count, &str_o, NULL, NULL);
 
     /* A choice is a position in its list or untouched, never anything else.
      * The empty middle entry is a choice like the others. */
@@ -135,7 +143,25 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         KIT_CLI_COMMAND     ("y", "y", y_opts, &cmd_y),
         KIT_CLI_COMMAND_BARE("w", "w", &cmd_y),
     };
-    check(commands, KIT_COUNTOF(commands), storage, count, &str_o, &rest);
+    check(commands, KIT_COUNTOF(commands), storage, count, &str_o, &rest, NULL);
+
+    /* A word, a list that leaves the last one, and a last one that may not be
+     * there, with a help flag that waives the lot. */
+    bool        help  = false;
+    const char *first = NULL, *last = NULL;
+    KitCliArgs  middle = {0};
+    str_o = "default";
+
+    KitCliOpt positional[] = {
+        KIT_CLI_HELP        ('h', "help", "h", &help),
+        KIT_CLI_STR         ('o', "output", "FILE", "o", &str_o),
+        KIT_CLI_ARG         ("FIRST", "f", &first),
+        KIT_CLI_ARGS        ("MIDDLE", "m", &middle),
+        KIT_CLI_ARG_OPTIONAL("LAST", "l", &last),
+    };
+    check(positional, KIT_COUNTOF(positional), storage, count, &str_o, NULL, &middle);
+    if (first) assert(from_input(first, storage, count));
+    if (last)  assert(from_input(last, storage, count));
 
     for (int i = 0; i < count; i++) free(storage[i]);
     return 0;

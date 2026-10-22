@@ -170,23 +170,26 @@ static bool get_flag(const Config *cfg, const char *key, bool *out) {
 int main(int argc, char **argv) {
     const char *prog = kit_cli_shift(&argc, &argv);
 
-    bool list = false, help = false;
+    bool        list = false, help = false;
+    const char *path = NULL;
     KitCliOpt opts[] = {
         KIT_CLI_FLAG('l', "list", "Print every key that was read", &list),
-        KIT_CLI_FLAG('h', "help", "Show this help",                &help),
+        KIT_CLI_HELP('h', "help", "Show this help",                &help),
+        KIT_CLI_ARG ("FILE",      "The configuration to read",     &path),
     };
-    if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) return 1;
-    if (help || argc != 1) {
-        kit_cli_usage_arr(stdout, prog, opts);
-        fprintf(stdout, "\nOne argument: the configuration file to read.\n");
-        return help ? 0 : 1;
-    }
 
     kit_log_set_fields(KIT_LOG_FIELD_LEVEL);
+    if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) {
+        kit_cli_usage_arr(stderr, prog, opts);
+        return 1;
+    }
+    if (help) {
+        kit_cli_usage_arr(stdout, prog, opts);
+        return 0;
+    }
 
     Config   cfg = KIT_ZEROED;
     KitError err = KIT_ZEROED;
-    const char *path = argv[0];
 
     if (!parse(&cfg, path, &err)) {
         kit_error_context(&err, "reading %s", path);

@@ -67,31 +67,35 @@ static const char *looks_like(const unsigned char *data, size_t size) {
 int main(int argc, char **argv) {
     const char *prog = kit_cli_shift(&argc, &argv);
 
-    int  bytes = 64, offset = 0;
-    bool all = false, quiet = false, sums = false, help = false;
+    int         bytes = 64, offset = 0;
+    bool        all = false, quiet = false, sums = false, help = false;
+    const char *path = NULL;
     KitCliOpt opts[] = {
         KIT_CLI_INT ('n', "bytes",  "N", "How many bytes to show", &bytes),
         KIT_CLI_INT ('o', "offset", "N", "Where to start",         &offset),
         KIT_CLI_FLAG('a', "all",    "Show the whole file",         &all),
         KIT_CLI_FLAG('s', "sums",   "Checksum it as well",         &sums),
         KIT_CLI_FLAG('q', "quiet",  "The dump on its own",         &quiet),
-        KIT_CLI_FLAG('h', "help",   "Show this help",              &help),
+        KIT_CLI_HELP('h', "help",   "Show this help",              &help),
+        KIT_CLI_ARG ("FILE",        "The file to look at",         &path),
     };
 
-    /* NULL, so a command line nobody can act on is logged and the usage
-     * printed: whoever typed it is the one who can fix it. */
+    /* Set before the parse, whose complaints would otherwise point into
+     * kit.h rather than at the command line. */
+    kit_log_set_fields(KIT_LOG_FIELD_LEVEL);
+
+    /* NULL, so a command line nobody can act on, a missing file included, is
+     * logged and the usage printed: whoever typed it is the one who can fix
+     * it. */
     if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) {
         kit_cli_usage_arr(stderr, prog, opts);
         return 1;
     }
-    if (help || argc != 1) {
-        kit_cli_usage_arr(help ? stdout : stderr, prog, opts);
-        return help ? 0 : 1;
+    if (help) {
+        kit_cli_usage_arr(stdout, prog, opts);
+        return 0;
     }
 
-    kit_log_set_fields(KIT_LOG_FIELD_LEVEL);
-
-    const char *path = argv[0];
     KitFileKind kind = kit_fs_kind(path);
     if (kind == KIT_FILE_KIND_NONE) {
         KIT_ERROR("there is nothing at %s", path);

@@ -1157,6 +1157,39 @@ char *kit_cli_shift(int *argc, char ***argv);
  * Any other value is refused with the list of the accepted ones, and the
  * usage shows the list where another option shows its placeholder.
  *
+ * -- Positional arguments ----------------------------------------------------
+ *
+ * The words that are neither options nor commands can be declared as well,
+ * in the order they come. They are then checked and stored like options, the
+ * usage names them, and completion knows what each one expects:
+ *
+ *   const char *path = NULL;
+ *   KitCliArgs  more = KIT_ZEROED;
+ *
+ *   KitCliOpt opts[] = {
+ *       KIT_CLI_HELP('h', "help", "Show this help", &help),
+ *       KIT_CLI_ARG ("FILE", "The file to read", &path),
+ *       KIT_CLI_ARGS("MORE", "Files to read after it", &more),
+ *   };
+ *
+ *   KIT_CLI_ARG             one word, required
+ *   KIT_CLI_ARG_OPTIONAL    one word or none; the destination keeps its default
+ *   KIT_CLI_ARG_CHOICE      one word out of a list, stored as its position
+ *   KIT_CLI_ARGS            every word left, none included, into a KitCliArgs
+ *   KIT_CLI_ARGS_REQUIRED   every word left, one at least
+ *
+ * A word missing, or one too many, is KIT_ERR_INVALID: "missing <FILE>",
+ * "unexpected argument 'b.txt'". An entry that takes every word left still
+ * leaves the ones the entries after it need, so "<SRC>... <DST>" works. The
+ * words also stay in argc and argv. A table that declares none keeps every
+ * word as a positional argument, unchecked; a table with commands takes none
+ * of its own, since its commands take them.
+ *
+ * Once an argument is required, the help flag is better declared with
+ * KIT_CLI_HELP: given on the line, it waives these checks, so asking how to
+ * call a command is not an error about calling it wrong. It is a flag in
+ * every other way.
+ *
  * -- Commands ----------------------------------------------------------------
  *
  * A program built around commands, the way git and cargo are, describes them
@@ -1193,15 +1226,27 @@ char *kit_cli_shift(int *argc, char ***argv);
  * in force, they join the positional arguments.
  * -------------------------------------------------------------------------- */
 
-/* What an entry is, and the type of its dst. */
+/* What an entry is, and the type of its dst. A positional argument taking
+ * every word left has a KitCliArgs * instead. */
 typedef enum {
     KIT_CLI_OPT_FLAG,      /* bool *, set when the option is present */
     KIT_CLI_OPT_STR,       /* const char **, the value as typed      */
     KIT_CLI_OPT_INT,       /* int *                                  */
     KIT_CLI_OPT_CHOICE,    /* int *, the position of the value given */
+    KIT_CLI_OPT_HELP,      /* bool *, a flag that waives the checks  */
     KIT_CLI_OPT_COMMAND,   /* bool *, set when the command is named  */
     KIT_CLI_OPT_REST       /* KitCliArgs *, what follows "--"        */
 } KitCliOptType;
+
+/* How many words a positional argument takes. The zero that every option,
+ * command and rest leaves here says that it is not one. */
+typedef enum {
+    KIT_CLI_NAMED,          /* not a positional argument         */
+    KIT_CLI_ONE,            /* exactly one word                  */
+    KIT_CLI_OPTIONAL,       /* one word, or none                 */
+    KIT_CLI_ZERO_OR_MORE,   /* every word left, into a KitCliArgs */
+    KIT_CLI_ONE_OR_MORE     /* every word left, one at least     */
+} KitCliArity;
 
 typedef struct KitCliOpt KitCliOpt;
 struct KitCliOpt {
@@ -1214,39 +1259,60 @@ struct KitCliOpt {
     void            *dst;        /* see KitCliOptType */
     const KitCliOpt *opts;       /* a command's own table, or NULL */
     size_t           n_opts;
+    KitCliArity      arity;      /* for a positional argument, how many words */
 };
 
-/* What followed "--", for KIT_CLI_REST. The items point into argv, so when
- * argv came from main the list ends on its NULL, as exec expects. */
+/* What followed "--", for KIT_CLI_REST, or the words a positional argument
+ * took. The items point into argv: what follows "--" still ends on main's
+ * NULL, as exec expects; the words of a positional argument do not. */
 typedef struct {
     char  **items;
     size_t  count;
 } KitCliArgs;
 
-#define KIT_CLI_FLAG(s, l,       help, dst) { (s), (l), KIT_CLI_OPT_FLAG, NULL,  (help), (dst), NULL, 0 }
-#define KIT_CLI_STR( s, l, meta, help, dst) { (s), (l), KIT_CLI_OPT_STR,  (meta),(help), (dst), NULL, 0 }
-#define KIT_CLI_INT( s, l, meta, help, dst) { (s), (l), KIT_CLI_OPT_INT,  (meta),(help), (dst), NULL, 0 }
+#define KIT_CLI_FLAG(s, l,       help, dst) \
+    { (s), (l), KIT_CLI_OPT_FLAG, NULL,   (help), (dst), NULL, 0, KIT_CLI_NAMED }
+#define KIT_CLI_STR( s, l, meta, help, dst) \
+    { (s), (l), KIT_CLI_OPT_STR,  (meta), (help), (dst), NULL, 0, KIT_CLI_NAMED }
+#define KIT_CLI_INT( s, l, meta, help, dst) \
+    { (s), (l), KIT_CLI_OPT_INT,  (meta), (help), (dst), NULL, 0, KIT_CLI_NAMED }
+#define KIT_CLI_HELP(s, l,       help, dst) \
+    { (s), (l), KIT_CLI_OPT_HELP, NULL,   (help), (dst), NULL, 0, KIT_CLI_NAMED }
 
 #define KIT_CLI_CHOICE(s, l, choices, help, dst) \
-    { (s), (l), KIT_CLI_OPT_CHOICE, (choices), (help), (dst), NULL, 0 }
+    { (s), (l), KIT_CLI_OPT_CHOICE, (choices), (help), (dst), NULL, 0, KIT_CLI_NAMED }
+
+/* Positional arguments, described above. */
+#define KIT_CLI_ARG(meta, help, dst) \
+    { 0, NULL, KIT_CLI_OPT_STR, (meta), (help), (dst), NULL, 0, KIT_CLI_ONE }
+#define KIT_CLI_ARG_OPTIONAL(meta, help, dst) \
+    { 0, NULL, KIT_CLI_OPT_STR, (meta), (help), (dst), NULL, 0, KIT_CLI_OPTIONAL }
+#define KIT_CLI_ARG_CHOICE(choices, help, dst) \
+    { 0, NULL, KIT_CLI_OPT_CHOICE, (choices), (help), (dst), NULL, 0, KIT_CLI_ONE }
+#define KIT_CLI_ARGS(meta, help, dst) \
+    { 0, NULL, KIT_CLI_OPT_STR, (meta), (help), (dst), NULL, 0, KIT_CLI_ZERO_OR_MORE }
+#define KIT_CLI_ARGS_REQUIRED(meta, help, dst) \
+    { 0, NULL, KIT_CLI_OPT_STR, (meta), (help), (dst), NULL, 0, KIT_CLI_ONE_OR_MORE }
 
 /* A command and its table. A command with no options of its own, which still
  * takes those of the tables around it, is KIT_CLI_COMMAND_BARE: C has no
  * empty array to count. */
 #define KIT_CLI_COMMAND(name, help, opts, dst) \
-    { 0, (name), KIT_CLI_OPT_COMMAND, NULL, (help), (dst), (opts), KIT_COUNTOF(opts) }
+    { 0, (name), KIT_CLI_OPT_COMMAND, NULL, (help), (dst), (opts), KIT_COUNTOF(opts), KIT_CLI_NAMED }
 #define KIT_CLI_COMMAND_BARE(name, help, dst) \
-    { 0, (name), KIT_CLI_OPT_COMMAND, NULL, (help), (dst), NULL, 0 }
+    { 0, (name), KIT_CLI_OPT_COMMAND, NULL, (help), (dst), NULL, 0, KIT_CLI_NAMED }
 
-#define KIT_CLI_REST(meta, help, dst) { 0, NULL, KIT_CLI_OPT_REST, (meta), (help), (dst), NULL, 0 }
+#define KIT_CLI_REST(meta, help, dst) \
+    { 0, NULL, KIT_CLI_OPT_REST, (meta), (help), (dst), NULL, 0, KIT_CLI_NAMED }
 
 /* Parse options in place. After the call, argc and argv hold only the
- * positional arguments.
+ * positional arguments, and those the table declares are in their
+ * destinations as well.
  *
  * A malformed command line is KIT_ERR_INVALID, with a message meant to be
- * shown to whoever typed it: "unknown option '--verbse'", or "unknown command
- * 'biuld'". Passing NULL logs it instead, which is what a program that prints
- * its usage and exits wants.
+ * shown to whoever typed it: "unknown option '--verbse'", "unknown command
+ * 'biuld'" or "missing <FILE>". Passing NULL logs it instead, which is what a
+ * program that prints its usage and exits wants.
  */
 bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv,
                    KitError *err);
@@ -1300,21 +1366,40 @@ bool kit_cli_complete(FILE *fp, const KitCliOpt *opts, size_t n_opts, int argc, 
 #define kit_cli_complete_arr(fp, opts, argc, argv) \
     kit_cli_complete((fp), (opts), KIT_COUNTOF(opts), (argc), (argv))
 
-/* Prints the script that connects a shell's completion to kit_cli_complete,
- * for "bash", "zsh", "fish" or "powershell". program is the command as typed:
- * a path is cut down to its file name, and the ".exe" Windows adds is
- * dropped. Any other shell, or a name the scripts could not hold without
- * quoting, is KIT_ERR_INVALID.
+/* The shells kit_cli_completion_script writes for. KIT_CLI_SHELLS names them
+ * in the same order, as the list of a choice, so the position a parse stores
+ * is the shell itself. */
+typedef enum {
+    KIT_CLI_SHELL_BASH,
+    KIT_CLI_SHELL_ZSH,
+    KIT_CLI_SHELL_FISH,
+    KIT_CLI_SHELL_POWERSHELL
+} KitCliShell;
+
+#define KIT_CLI_SHELLS "bash|zsh|fish|powershell"
+
+/* Prints the script that connects a shell's completion to kit_cli_complete.
+ * program is the command as typed: a path is cut down to its file name, and
+ * the ".exe" Windows adds is dropped. A name the scripts could not hold
+ * without quoting is KIT_ERR_INVALID, and so is a shell outside the enum.
  *
- * How the program hands it out is its own choice, usually as a command, and
- * how a person installs it is then one line:
+ * How the program hands it out is its own choice, usually as a command that
+ * takes the shell, which then completes like everything else:
+ *
+ *   KitCliOpt completion_opts[] = {
+ *       KIT_CLI_ARG_CHOICE(KIT_CLI_SHELLS, "The shell to write for", &shell),
+ *   };
+ *   ...
+ *   kit_cli_completion_script(stdout, program, (KitCliShell)shell, &err);
+ *
+ * A person then installs it with one line:
  *
  *   eval "$(tool completion bash)"           in ~/.bashrc
  *   eval "$(tool completion zsh)"            in ~/.zshrc, after compinit
  *   tool completion fish > ~/.config/fish/completions/tool.fish
  *   tool completion powershell | Out-String | Invoke-Expression   in $PROFILE
  */
-bool kit_cli_completion_script(FILE *fp, const char *program, const char *shell,
+bool kit_cli_completion_script(FILE *fp, const char *program, KitCliShell shell,
                                KitError *err);
 
 /* --------------------------------------------------------------------------
@@ -3647,10 +3732,23 @@ static bool kit__cli_scope_push(Kit__CliScope *scope, const KitCliOpt *command) 
 }
 
 /* Only these answer to -x or --name. A command is named as a plain word, and
- * the entry for what follows "--" has no name at all. */
+ * a positional argument and the entry for what follows "--" have no name. */
 static bool kit__cli_is_option(const KitCliOpt *o) {
-    return o->type == KIT_CLI_OPT_FLAG || o->type == KIT_CLI_OPT_STR ||
-           o->type == KIT_CLI_OPT_INT  || o->type == KIT_CLI_OPT_CHOICE;
+    if (o->arity != KIT_CLI_NAMED) return false;
+    return o->type == KIT_CLI_OPT_FLAG || o->type == KIT_CLI_OPT_HELP ||
+           o->type == KIT_CLI_OPT_STR  || o->type == KIT_CLI_OPT_INT  ||
+           o->type == KIT_CLI_OPT_CHOICE;
+}
+
+static bool kit__cli_is_positional(const KitCliOpt *o) {
+    return o->arity != KIT_CLI_NAMED &&
+           (o->type == KIT_CLI_OPT_STR || o->type == KIT_CLI_OPT_INT ||
+            o->type == KIT_CLI_OPT_CHOICE);
+}
+
+/* Set by being on the line, never given a value. */
+static bool kit__cli_is_switch(const KitCliOpt *o) {
+    return o->type == KIT_CLI_OPT_FLAG || o->type == KIT_CLI_OPT_HELP;
 }
 
 static const KitCliOpt *kit__cli_short_in(const KitCliOpt *opts, size_t n_opts, char c) {
@@ -3728,17 +3826,25 @@ static bool kit__cli_refuse_choice(const KitCliOpt *o, const char *val, const ch
         if (list.count > 0) kit_buf_append(&list, ", ");
         kit_buf_append_str(&list, choice);
     }
-    kit_error_set(err, KIT_ERR_INVALID, "'%s' expects one of %s, got '%s'",
-                  origin, kit_buf_cstr(&list), val);
+    if (origin) {
+        kit_error_set(err, KIT_ERR_INVALID, "'%s' expects one of %s, got '%s'",
+                      origin, kit_buf_cstr(&list), val);
+    } else {
+        kit_error_set(err, KIT_ERR_INVALID, "expected one of %s, got '%s'",
+                      kit_buf_cstr(&list), val);
+    }
     kit_buf_free(&list);
     return false;
 }
 
-/* `origin` is the argument as the user typed it, quoted back in errors. */
-static bool kit__cli_assign(const KitCliOpt *o, const char *val, const char *origin,
-                            KitError *err) {
+/* Checks a value against what the entry expects and stores it in dst, which
+ * is the entry's own destination, or scratch for one word of a list.
+ * `origin` is the option as the user typed it, quoted back in errors; a
+ * positional argument has none, and its errors are worded around its name. */
+static bool kit__cli_store(const KitCliOpt *o, void *dst, const char *val, const char *origin,
+                           KitError *err) {
     if (o->type == KIT_CLI_OPT_STR) {
-        *(const char **)o->dst = val;
+        *(const char **)dst = val;
         return true;
     }
 
@@ -3746,7 +3852,7 @@ static bool kit__cli_assign(const KitCliOpt *o, const char *val, const char *ori
         KitStr choices = kit_str_from(o->meta ? o->meta : ""), choice;
         for (int at = 0; kit_str_next(&choices, '|', &choice); at++) {
             if (kit_str_eq_cstr(choice, val)) {
-                *(int *)o->dst = at;
+                *(int *)dst = at;
                 return true;
             }
         }
@@ -3757,11 +3863,20 @@ static bool kit__cli_assign(const KitCliOpt *o, const char *val, const char *ori
     errno = 0;
     long v = strtol(val, &end, 10);
     if (end == val || *end != '\0' || errno == ERANGE || v < INT_MIN || v > INT_MAX) {
-        return kit_error_set(err, KIT_ERR_INVALID,
-                             "'%s' expects an integer, got '%s'", origin, val);
+        if (origin) {
+            return kit_error_set(err, KIT_ERR_INVALID,
+                                 "'%s' expects an integer, got '%s'", origin, val);
+        }
+        return kit_error_set(err, KIT_ERR_INVALID, "<%s> expects an integer, got '%s'",
+                             o->meta ? o->meta : "N", val);
     }
-    *(int *)o->dst = (int)v;
+    *(int *)dst = (int)v;
     return true;
+}
+
+static bool kit__cli_assign(const KitCliOpt *o, const char *val, const char *origin,
+                            KitError *err) {
+    return kit__cli_store(o, o->dst, val, origin, err);
 }
 
 /* Walks one "-abc" token. Flags chain; the first option that takes a value
@@ -3780,7 +3895,7 @@ static bool kit__cli_parse_short_group(const Kit__CliScope *scope, const char *a
                                  "unknown option '-%c' in '%s'", name, arg);
         }
 
-        if (match->type == KIT_CLI_OPT_FLAG) {
+        if (kit__cli_is_switch(match)) {
             if (*c == '=') {
                 return kit_error_set(err, KIT_ERR_INVALID,
                                      "'-%c' takes no argument", name);
@@ -3801,6 +3916,83 @@ static bool kit__cli_parse_short_group(const Kit__CliScope *scope, const char *a
         }
         return kit__cli_assign(match, val, arg, err);
     }
+    return true;
+}
+
+/* A help flag in force is set: the line asks how to call the command, and
+ * what it lacks for calling it is no error. */
+static bool kit__cli_help_given(const Kit__CliScope *scope) {
+    for (size_t d = 0; d < scope->depth; d++) {
+        for (size_t i = 0; i < scope->counts[d]; i++) {
+            const KitCliOpt *o = &scope->tables[d][i];
+            if (o->type == KIT_CLI_OPT_HELP && o->dst && *(const bool *)o->dst) return true;
+        }
+    }
+    return false;
+}
+
+static bool kit__cli_required(const KitCliOpt *o) {
+    return o->arity == KIT_CLI_ONE || o->arity == KIT_CLI_ONE_OR_MORE;
+}
+
+static bool kit__cli_takes_many(const KitCliOpt *o) {
+    return o->arity == KIT_CLI_ZERO_OR_MORE || o->arity == KIT_CLI_ONE_OR_MORE;
+}
+
+/* Hands the positional words to the entries that declare them, in order. An
+ * entry taking every word left still leaves the ones the entries after it
+ * need at the least, which is how "<SRC>... <DST>" gives DST the last word.
+ * A table that declares none keeps its words unchecked, as it always has. */
+static bool kit__cli_take_positionals(const KitCliOpt *opts, size_t n_opts,
+                                      char **words, int count, KitError *err) {
+    int  need     = 0;
+    bool declared = false;
+    for (size_t i = 0; i < n_opts; i++) {
+        if (!kit__cli_is_positional(&opts[i])) continue;
+        declared = true;
+        if (kit__cli_required(&opts[i])) need++;
+    }
+    if (!declared) return true;
+
+    int at = 0;
+    for (size_t i = 0; i < n_opts; i++) {
+        const KitCliOpt *o = &opts[i];
+        if (!kit__cli_is_positional(o)) continue;
+        if (kit__cli_required(o)) need--;
+
+        /* What this entry may take beyond what the ones after it need. */
+        int spare = count - at - need;
+        int take;
+        switch (o->arity) {
+        case KIT_CLI_ONE:          take = 1;                     break;
+        case KIT_CLI_OPTIONAL:     take = spare > 0 ? 1 : 0;     break;
+        case KIT_CLI_ZERO_OR_MORE: take = spare > 0 ? spare : 0; break;
+        default:                   take = spare > 1 ? spare : 1; break;
+        }
+        if (take > count - at) {
+            return kit_error_set(err, KIT_ERR_INVALID, "missing <%s>%s",
+                                 o->meta ? o->meta : "ARG",
+                                 kit__cli_takes_many(o) ? "..." : "");
+        }
+
+        if (kit__cli_takes_many(o)) {
+            /* Each word is checked as a single one would be; only the list
+             * itself is kept, a window on argv. */
+            for (int k = 0; k < take; k++) {
+                union { const char *text; int number; } scratch;
+                if (!kit__cli_store(o, &scratch, words[at + k], NULL, err)) return false;
+            }
+            KitCliArgs *list = (KitCliArgs *)o->dst;
+            list->items = words + at;
+            list->count = (size_t)take;
+        } else if (take == 1 && !kit__cli_store(o, o->dst, words[at], NULL, err)) {
+            return false;
+        }
+        at += take;
+    }
+
+    if (at < count)
+        return kit_error_set(err, KIT_ERR_INVALID, "unexpected argument '%s'", words[at]);
     return true;
 }
 
@@ -3865,7 +4057,7 @@ bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv,
             return kit_error_set(err, KIT_ERR_INVALID, "unknown option '%s'", arg);
         }
 
-        if (match->type == KIT_CLI_OPT_FLAG) {
+        if (kit__cli_is_switch(match)) {
             if (eq) {
                 return kit_error_set(err, KIT_ERR_INVALID,
                                      "'--%.*s' takes no argument", (int)key_len, key);
@@ -3884,9 +4076,14 @@ bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv,
         }
         if (!kit__cli_assign(match, val, arg, err)) return false;
     }
-
     *argc = out;
-    return true;
+
+    /* The positional arguments belong to the innermost command named, or to
+     * the table itself when it has no commands to name. */
+    const KitCliOpt *here   = scope.tables[scope.depth - 1];
+    size_t           n_here = scope.counts[scope.depth - 1];
+    if (kit__cli_has_commands(here, n_here) || kit__cli_help_given(&scope)) return true;
+    return kit__cli_take_positionals(here, n_here, args, out, err);
 }
 
 #define KIT__CLI_HELP_COLUMN 36
@@ -3929,6 +4126,17 @@ static void kit__cli_usage_option(FILE *fp, KitBuf *left, const KitCliOpt *o,
     kit__cli_usage_line(fp, left, o->help);
 }
 
+/* A positional argument as the usage writes it: <FILE>, [<DIR>], <FILE>... */
+static void kit__cli_usage_positional(KitBuf *out, const KitCliOpt *o) {
+    const char *meta = o->meta ? o->meta : "ARG";
+    switch (o->arity) {
+    case KIT_CLI_OPTIONAL:     kit_buf_printf(out, "[<%s>]", meta);    break;
+    case KIT_CLI_ZERO_OR_MORE: kit_buf_printf(out, "[<%s>...]", meta); break;
+    case KIT_CLI_ONE_OR_MORE:  kit_buf_printf(out, "<%s>...", meta);   break;
+    default:                   kit_buf_printf(out, "<%s>", meta);      break;
+    }
+}
+
 /* The command the last parse named in a table, if it named one there. */
 static const KitCliOpt *kit__cli_chosen(const KitCliOpt *opts, size_t n_opts) {
     for (size_t i = 0; i < n_opts; i++)
@@ -3958,16 +4166,29 @@ void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t 
     bool             commands = kit__cli_has_commands(here, n_here);
     const KitCliOpt *rest     = kit__cli_find_rest(&scope);
 
-    bool options = false;
+    bool options = false, positionals = false;
     for (size_t d = 0; d < scope.depth; d++)
         for (size_t i = 0; i < scope.counts[d]; i++)
             options = options || kit__cli_is_option(&scope.tables[d][i]);
+    for (size_t i = 0; i < n_here && !commands; i++)
+        positionals = positionals || kit__cli_is_positional(&here[i]);
 
     /* The command is in brackets because the parser does not insist on one:
      * whether naming none is a mistake or the default action is the program's
      * to decide, and its own check says which. */
-    fprintf(fp, "Usage: %s%s%s", kit_buf_cstr(&invocation),
-            options ? " [options]" : "", commands ? " [<command> ...]" : " ...");
+    fprintf(fp, "Usage: %s%s", kit_buf_cstr(&invocation), options ? " [options]" : "");
+    if (commands) {
+        fputs(" [<command> ...]", fp);
+    } else if (positionals) {
+        for (size_t i = 0; i < n_here; i++) {
+            if (!kit__cli_is_positional(&here[i])) continue;
+            kit_buf_reset(&left);
+            kit__cli_usage_positional(&left, &here[i]);
+            fprintf(fp, " %s", kit_buf_cstr(&left));
+        }
+    } else {
+        fputs(" ...", fp);
+    }
     if (rest) {
         if (rest->meta) fprintf(fp, " [-- <%s>...]", rest->meta);
         else            fputs(" [-- ...]", fp);
@@ -3984,10 +4205,21 @@ void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t 
         }
     }
 
+    if (positionals) {
+        fputs("\nArguments:\n", fp);
+        for (size_t i = 0; i < n_here; i++) {
+            if (!kit__cli_is_positional(&here[i])) continue;
+            kit_buf_reset(&left);
+            kit_buf_append(&left, "  ");
+            kit__cli_usage_positional(&left, &here[i]);
+            kit__cli_usage_line(fp, &left, here[i].help);
+        }
+    }
+
     bool heading = false;
     for (size_t i = 0; i < n_here; i++) {
         const KitCliOpt *o = &here[i];
-        if (o->type == KIT_CLI_OPT_COMMAND) continue;
+        if (o->type == KIT_CLI_OPT_COMMAND || kit__cli_is_positional(o)) continue;
         if (!heading) fputs("\nOptions:\n", fp);
         heading = true;
         kit__cli_usage_option(fp, &left, o, o->short_name, o->long_name);
@@ -3998,7 +4230,7 @@ void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t 
     for (size_t d = scope.depth - 1; d-- > 0; ) {
         for (size_t i = 0; i < scope.counts[d]; i++) {
             const KitCliOpt *o = &scope.tables[d][i];
-            if (o->type == KIT_CLI_OPT_COMMAND) continue;
+            if (o->type == KIT_CLI_OPT_COMMAND || kit__cli_is_positional(o)) continue;
             if (o->type == KIT_CLI_OPT_REST && o != rest) continue;
 
             char        short_name = o->short_name;
@@ -4136,6 +4368,25 @@ static const char *kit__cli_complete_dash(FILE *fp, const Kit__CliScope *scope,
     return ":none";
 }
 
+/* What the next positional argument of a table may be. The words already
+ * given go to the declared entries in order, a list keeping every one after
+ * it. With none declared any word goes, and a file name is the best guess. */
+static const char *kit__cli_offer_positional(FILE *fp, const KitCliOpt *opts, size_t n_opts,
+                                             int given, const char *typed) {
+    bool declared = false;
+    for (size_t i = 0; i < n_opts; i++) {
+        const KitCliOpt *o = &opts[i];
+        if (!kit__cli_is_positional(o)) continue;
+        declared = true;
+        if (!kit__cli_takes_many(o) && given > 0) {
+            given--;
+            continue;
+        }
+        return kit__cli_offer_value(fp, o, "", 0, typed);
+    }
+    return declared ? ":none" : ":files";
+}
+
 bool kit_cli_complete(FILE *fp, const KitCliOpt *opts, size_t n_opts, int argc, char **argv) {
     if (argc < 1 || strcmp(argv[0], KIT__CLI_REQUEST) != 0) return false;
 
@@ -4149,36 +4400,44 @@ bool kit_cli_complete(FILE *fp, const KitCliOpt *opts, size_t n_opts, int argc, 
      * often, and what it already says is still worth reading. */
     Kit__CliScope    scope;
     const KitCliOpt *waiting = NULL;
-    bool             rest    = false;
+    bool             rest    = false;   /* past "--", into a KIT_CLI_REST    */
+    bool             literal = false;   /* past "--" with none: all arguments */
+    int              given   = 0;       /* positional arguments of the innermost command */
     kit__cli_scope_init(&scope, opts, n_opts);
 
     for (int i = 1; i <= n_before && !rest; i++) {
-        const char *word = argv[i];
+        const char      *word   = argv[i];
+        const KitCliOpt *here   = scope.tables[scope.depth - 1];
+        size_t           n_here = scope.counts[scope.depth - 1];
         if (waiting) {
             waiting = NULL;
+        } else if (literal) {
+            given++;
         } else if (strcmp(word, "--") == 0) {
-            rest = true;
+            if (kit__cli_find_rest(&scope)) rest = true;
+            else                            literal = true;
         } else if (word[0] == '-' && word[1] != '\0') {
             waiting = kit__cli_waiting(&scope, word);
         } else {
-            const KitCliOpt *here    = scope.tables[scope.depth - 1];
-            const KitCliOpt *command = kit__cli_command_in(here, scope.counts[scope.depth - 1], word);
-            if (command) kit__cli_scope_push(&scope, command);
+            const KitCliOpt *command = kit__cli_command_in(here, n_here, word);
+            if (command && kit__cli_scope_push(&scope, command)) given = 0;
+            else                                                 given++;
         }
     }
 
-    const char *directive = ":none";
+    const KitCliOpt *here      = scope.tables[scope.depth - 1];
+    size_t           n_here    = scope.counts[scope.depth - 1];
+    const char      *directive = ":none";
     if (rest) {
         directive = ":files";
     } else if (waiting) {
         directive = kit__cli_offer_value(fp, waiting, "", 0, typed);
-    } else if (typed[0] == '-') {
+    } else if (!literal && typed[0] == '-') {
         directive = kit__cli_complete_dash(fp, &scope, typed);
+    } else if (!literal && kit__cli_has_commands(here, n_here)) {
+        kit__cli_offer_commands(fp, here, n_here, typed);
     } else {
-        const KitCliOpt *here   = scope.tables[scope.depth - 1];
-        size_t           n_here = scope.counts[scope.depth - 1];
-        if (kit__cli_has_commands(here, n_here)) kit__cli_offer_commands(fp, here, n_here, typed);
-        else                                     directive = ":files";
+        directive = kit__cli_offer_positional(fp, here, n_here, given, typed);
     }
 
     fprintf(fp, "%s\n", directive);
@@ -4370,27 +4629,17 @@ static void kit__cli_write_script(FILE *fp, const char *const *lines, const char
     }
 }
 
-bool kit_cli_completion_script(FILE *fp, const char *program, const char *shell,
+bool kit_cli_completion_script(FILE *fp, const char *program, KitCliShell shell,
                                KitError *err) {
-    static const struct {
-        const char        *shell;
-        const char *const *lines;
-    } scripts[] = {
-        { "bash",       kit__cli_script_bash       },
-        { "zsh",        kit__cli_script_zsh        },
-        { "fish",       kit__cli_script_fish       },
-        { "powershell", kit__cli_script_powershell },
+    /* In KitCliShell's order, which KIT_CLI_SHELLS repeats. */
+    static const char *const *const scripts[] = {
+        kit__cli_script_bash,
+        kit__cli_script_zsh,
+        kit__cli_script_fish,
+        kit__cli_script_powershell,
     };
-
-    const char *const *lines = NULL;
-    for (size_t i = 0; shell && i < KIT_COUNTOF(scripts); i++)
-        if (strcmp(shell, scripts[i].shell) == 0) lines = scripts[i].lines;
-    if (!lines && !shell)
-        return kit_error_set(err, KIT_ERR_INVALID,
-                             "no shell named, expected bash, zsh, fish or powershell");
-    if (!lines)
-        return kit_error_set(err, KIT_ERR_INVALID,
-                             "unknown shell '%s', expected bash, zsh, fish or powershell", shell);
+    if ((size_t)shell >= KIT_COUNTOF(scripts))
+        return kit_error_set(err, KIT_ERR_INVALID, "no completion script for shell %d", (int)shell);
 
     /* What a program started with an empty argv hands over. */
     if (!program || !*program)
@@ -4418,7 +4667,7 @@ bool kit_cli_completion_script(FILE *fp, const char *program, const char *shell,
         kit_buf_append_char(&name, c);
         kit_buf_append_char(&id, c == '-' || c == '.' || c == '+' ? '_' : c);
     }
-    kit__cli_write_script(fp, lines, kit_buf_cstr(&name), kit_buf_cstr(&id));
+    kit__cli_write_script(fp, scripts[shell], kit_buf_cstr(&name), kit_buf_cstr(&id));
     kit_buf_free(&name);
     kit_buf_free(&id);
     return true;

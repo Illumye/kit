@@ -625,6 +625,7 @@ TEST(cli_command_tables_say_what_their_entries_are) {
     CHECK(inner[1].type == KIT_CLI_OPT_STR);
     CHECK(inner[2].type == KIT_CLI_OPT_INT);
     CHECK(inner[0].opts == NULL && inner[0].n_opts == 0);
+    CHECK(inner[0].arity == KIT_CLI_NAMED && inner[3].arity == KIT_CLI_NAMED);
 
     CHECK(inner[3].type == KIT_CLI_OPT_REST);
     CHECK(inner[3].long_name == NULL);
@@ -638,6 +639,27 @@ TEST(cli_command_tables_say_what_their_entries_are) {
     CHECK(opts[1].type == KIT_CLI_OPT_COMMAND);
     CHECK(opts[1].opts == NULL);
     CHECK_INT(opts[1].n_opts, 0);
+
+    /* A positional argument has no name, and says how many words it takes. */
+    const char *one = NULL, *maybe = NULL;
+    int         which = 0;
+    KitCliArgs  any = KIT_ZEROED, some = KIT_ZEROED;
+    KitCliOpt   positional[] = {
+        KIT_CLI_ARG          ("ONE",   "one",   &one),
+        KIT_CLI_ARG_OPTIONAL ("MAYBE", "maybe", &maybe),
+        KIT_CLI_ARG_CHOICE   ("a|b",   "which", &which),
+        KIT_CLI_ARGS         ("ANY",   "any",   &any),
+        KIT_CLI_ARGS_REQUIRED("SOME",  "some",  &some),
+    };
+    KitCliArity arities[] = {
+        KIT_CLI_ONE, KIT_CLI_OPTIONAL, KIT_CLI_ONE, KIT_CLI_ZERO_OR_MORE, KIT_CLI_ONE_OR_MORE,
+    };
+    for (size_t i = 0; i < KIT_COUNTOF(arities); i++) {
+        CHECK_INT(positional[i].arity, arities[i]);
+        CHECK(positional[i].short_name == 0 && positional[i].long_name == NULL);
+    }
+    CHECK(positional[0].type == KIT_CLI_OPT_STR);
+    CHECK(positional[2].type == KIT_CLI_OPT_CHOICE);
 }
 
 TEST(cli_commands_choose_the_table_that_reads_the_rest) {
@@ -1043,7 +1065,7 @@ TEST(cli_complete_keeps_each_description_to_one_line) {
 
 /* The script for one shell and one program name, as a heap string, or NULL
  * when it was refused. */
-static char *script_text(const char *program, const char *shell, KitError *err) {
+static char *script_text(const char *program, KitCliShell shell, KitError *err) {
     const char *path = "utest-tmp-script.txt";
     FILE       *fp   = fopen(path, "wb");
     if (!fp) return NULL;
@@ -1062,11 +1084,11 @@ static char *script_text(const char *program, const char *shell, KitError *err) 
 TEST(cli_completion_script_registers_the_command_as_typed) {
     /* A path is cut to the file name, the ".exe" goes, and the function the
      * script defines takes a name a shell accepts. */
-    struct { const char *shell, *registers; } expected[] = {
-        { "bash",       "complete -o nosort -F __kit_complete_my_tool my-tool" },
-        { "zsh",        "compdef _my_tool my-tool" },
-        { "fish",       "complete -c my-tool -f -k -a '(__kit_complete_my_tool)'" },
-        { "powershell", "-CommandName 'my-tool', 'my-tool.exe'" },
+    struct { KitCliShell shell; const char *registers; } expected[] = {
+        { KIT_CLI_SHELL_BASH,       "complete -o nosort -F __kit_complete_my_tool my-tool" },
+        { KIT_CLI_SHELL_ZSH,        "compdef _my_tool my-tool" },
+        { KIT_CLI_SHELL_FISH,       "complete -c my-tool -f -k -a '(__kit_complete_my_tool)'" },
+        { KIT_CLI_SHELL_POWERSHELL, "-CommandName 'my-tool', 'my-tool.exe'" },
     };
     for (size_t i = 0; i < KIT_COUNTOF(expected); i++) {
         KitError err  = KIT_ZEROED;
@@ -1080,29 +1102,293 @@ TEST(cli_completion_script_registers_the_command_as_typed) {
     }
 }
 
+/* KIT_CLI_SHELLS is the list a choice reads the shell from, so its order has
+ * to be the enum's: each name, parsed, picks the script for that shell. */
+TEST(cli_completion_shells_are_listed_in_the_enum_order) {
+    const char *names[]   = { "bash", "zsh", "fish", "powershell" };
+    const char *headers[] = { "# bash completion", "# zsh completion",
+                              "# fish completion", "# PowerShell completion" };
+    for (size_t i = 0; i < KIT_COUNTOF(names); i++) {
+        int       shell  = -1;
+        KitCliOpt opts[] = { KIT_CLI_ARG_CHOICE(KIT_CLI_SHELLS, "The shell", &shell) };
+        ARGV(names[i]);
+        if (!CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL))) continue;
+        CHECK_INT(shell, (int)i);
+
+        KitError err  = KIT_ZEROED;
+        char    *text = script_text("tool", (KitCliShell)shell, &err);
+        if (CHECK(text != NULL)) CHECK(strstr(text, headers[i]) != NULL);
+        free(text);
+    }
+}
+
 TEST(cli_completion_script_refuses_what_it_cannot_write) {
     KitError err = KIT_ZEROED;
-    CHECK(script_text("tool", "tcsh", &err) == NULL);
-    CHECK(failed_with(&err, KIT_ERR_INVALID,
-                      "unknown shell 'tcsh', expected bash, zsh, fish or powershell"));
-
-    kit_error_clear(&err);
-    CHECK(script_text("tool", NULL, &err) == NULL);
-    CHECK(failed_with(&err, KIT_ERR_INVALID, "no shell named"));
+    CHECK(script_text("tool", (KitCliShell)42, &err) == NULL);
+    CHECK(failed_with(&err, KIT_ERR_INVALID, "no completion script for shell 42"));
 
     /* The scripts hold the name bare, so a space or a quote has no place. */
     kit_error_clear(&err);
-    CHECK(script_text("my tool", "bash", &err) == NULL);
+    CHECK(script_text("my tool", KIT_CLI_SHELL_BASH, &err) == NULL);
     CHECK(failed_with(&err, KIT_ERR_INVALID, "cannot complete a program named 'my tool'"));
 
     /* Nothing to register at all, which is what a program started with an
      * empty argv hands over. */
     kit_error_clear(&err);
-    CHECK(script_text(NULL, "zsh", &err) == NULL);
+    CHECK(script_text(NULL, KIT_CLI_SHELL_ZSH, &err) == NULL);
     CHECK(failed_with(&err, KIT_ERR_INVALID, "cannot complete a program with no name"));
     kit_error_clear(&err);
-    CHECK(script_text("", "fish", &err) == NULL);
+    CHECK(script_text("", KIT_CLI_SHELL_FISH, &err) == NULL);
     CHECK(failed_with(&err, KIT_ERR_INVALID, "cannot complete a program with no name"));
+}
+
+/* --- positional arguments ------------------------------------------------- */
+
+TEST(cli_positionals_fill_the_declared_arguments) {
+    bool        verbose = false;
+    const char *file    = NULL, *dir = "here";
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG        ('v', "verbose", "verbose", &verbose),
+        KIT_CLI_ARG         ("FILE", "The file to read", &file),
+        KIT_CLI_ARG_OPTIONAL("DIR",  "Where to write",   &dir),
+    };
+
+    {   /* an optional argument left out keeps its default */
+        ARGV("a.txt");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        CHECK_STR(file, "a.txt");
+        CHECK_STR(dir, "here");
+    }
+    {   /* options anywhere around them, and argv keeps the words as before */
+        ARGV("b.txt", "-v", "out");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        CHECK(verbose);
+        CHECK_STR(file, "b.txt");
+        CHECK_STR(dir, "out");
+        CHECK_INT(argc, 2);
+        CHECK_STR(argv[1], "out");
+    }
+
+    KitError err = KIT_ZEROED;
+    { ARGV("-v");
+      CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID, "missing <FILE>")); }
+    kit_error_clear(&err);
+    { ARGV("a", "b", "c");
+      CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID, "unexpected argument 'c'")); }
+}
+
+TEST(cli_positional_lists_leave_what_the_next_arguments_need) {
+    KitCliArgs  sources = KIT_ZEROED;
+    const char *target  = NULL;
+    KitCliOpt opts[] = {
+        KIT_CLI_ARGS_REQUIRED("SRC", "What to copy", &sources),
+        KIT_CLI_ARG          ("DST", "Where to",     &target),
+    };
+
+    {   ARGV("a", "b", "c");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        if (CHECK_INT(sources.count, 2)) {
+            CHECK_STR(sources.items[0], "a");
+            CHECK_STR(sources.items[1], "b");
+        }
+        CHECK_STR(target, "c");
+    }
+    {   ARGV("a", "b");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        CHECK_INT(sources.count, 1);
+        CHECK_STR(target, "b");
+    }
+
+    KitError err = KIT_ZEROED;
+    { ARGV("a");
+      CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID, "missing <DST>")); }
+
+    /* None at all is a list too, and after "--" a word with a dash is just a
+     * word. */
+    KitCliArgs files = KIT_ZEROED;
+    KitCliOpt  any[] = { KIT_CLI_ARGS("FILE", "Files", &files) };
+    {   ARGV("--");
+        CHECK(kit_cli_parse_arr(any, &argc, &argv, NULL));
+        CHECK_INT(files.count, 0);
+    }
+    {   ARGV("a", "--", "-b");
+        CHECK(kit_cli_parse_arr(any, &argc, &argv, NULL));
+        if (CHECK_INT(files.count, 2)) CHECK_STR(files.items[1], "-b");
+    }
+}
+
+TEST(cli_positionals_check_their_type) {
+    bool verbose = false;
+    int  shell   = -1, n = 0;
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG      ('v', "verbose", "verbose", &verbose),
+        KIT_CLI_ARG_CHOICE(KIT_CLI_SHELLS, "The shell", &shell),
+    };
+    { ARGV("zsh"); CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL)); }
+    CHECK_INT(shell, KIT_CLI_SHELL_ZSH);
+
+    KitError err = KIT_ZEROED;
+    { ARGV("tcsh");
+      CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID,
+                        "expected one of bash, zsh, fish, powershell, got 'tcsh'")); }
+    kit_error_clear(&err);
+    { ARGV("-v");
+      CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID, "missing <bash|zsh|fish|powershell>")); }
+
+    /* A number, and a list whose every word is checked, written out by hand:
+     * no macro is needed for an entry the parser understands. */
+    KitCliOpt number[] = {
+        { 0, NULL, KIT_CLI_OPT_INT, "N", "How many", &n, NULL, 0, KIT_CLI_ONE },
+    };
+    { ARGV("12"); CHECK(kit_cli_parse_arr(number, &argc, &argv, NULL)); }
+    CHECK_INT(n, 12);
+    kit_error_clear(&err);
+    { ARGV("twelve");
+      CHECK(!kit_cli_parse_arr(number, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID, "<N> expects an integer, got 'twelve'")); }
+
+    KitCliArgs picked = KIT_ZEROED;
+    KitCliOpt  colours[] = {
+        { 0, NULL, KIT_CLI_OPT_CHOICE, "red|green|blue", "Colours", &picked, NULL, 0,
+          KIT_CLI_ONE_OR_MORE },
+    };
+    { ARGV("red", "blue"); CHECK(kit_cli_parse_arr(colours, &argc, &argv, NULL)); }
+    CHECK_INT(picked.count, 2);
+    kit_error_clear(&err);
+    { ARGV("red", "pink");
+      CHECK(!kit_cli_parse_arr(colours, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID, "expected one of red, green, blue, got 'pink'")); }
+}
+
+TEST(cli_help_waives_what_the_line_lacks) {
+    bool        help = false, flag = false, show = false;
+    const char *file = NULL;
+    KitCliOpt opts[] = {
+        KIT_CLI_HELP('h', "help", "Show this help", &help),
+        KIT_CLI_ARG ("FILE", "The file", &file),
+    };
+    CHECK(opts[0].type == KIT_CLI_OPT_HELP);
+
+    {   ARGV("--help");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        CHECK(help);
+        CHECK(file == NULL);
+    }
+    {   help = false;
+        ARGV("-h", "a", "b", "c");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+    }
+    /* Still a flag in every other way. */
+    {   ARGV("--help=yes"); CHECK(!kit_cli_parse_arr(opts, &argc, &argv, NULL)); }
+
+    /* A plain flag named help waives nothing: the parser goes by the kind of
+     * entry, never by its name. */
+    KitCliOpt plain[] = {
+        KIT_CLI_FLAG('h', "help", "Show this help", &flag),
+        KIT_CLI_ARG ("FILE", "The file", &file),
+    };
+    {   ARGV("--help"); CHECK(!kit_cli_parse_arr(plain, &argc, &argv, NULL)); }
+
+    /* Inherited by a command, it waives the command's arguments too. */
+    help = false;
+    KitCliOpt show_opts[] = { KIT_CLI_ARG("FILE", "The file", &file) };
+    KitCliOpt root[] = {
+        KIT_CLI_HELP   ('h', "help", "Show this help", &help),
+        KIT_CLI_COMMAND("show", "Show a file", show_opts, &show),
+    };
+    {   ARGV("show", "-h");
+        CHECK(kit_cli_parse_arr(root, &argc, &argv, NULL));
+        CHECK(show);
+        CHECK(help);
+    }
+}
+
+TEST(cli_usage_names_the_positional_arguments) {
+    bool        help = false;
+    const char *file = NULL, *dir = ".";
+    KitCliArgs  more = KIT_ZEROED;
+    KitCliOpt opts[] = {
+        KIT_CLI_HELP        ('h', "help", "Show this help", &help),
+        KIT_CLI_ARG         ("FILE", "The file to read", &file),
+        KIT_CLI_ARG_OPTIONAL("DIR",  "Where to write",   &dir),
+        KIT_CLI_ARGS        ("MORE", "Read after it",    &more),
+    };
+
+    char *text = usage_text(opts, KIT_COUNTOF(opts));
+    CHECK_STR(text, "Usage: tool [options] <FILE> [<DIR>] [<MORE>...]\n"
+                    "\n"
+                    "Arguments:\n"
+                    "  <FILE>                             The file to read\n"
+                    "  [<DIR>]                            Where to write\n"
+                    "  [<MORE>...]                        Read after it\n"
+                    "\n"
+                    "Options:\n"
+                    "  -h, --help                         Show this help\n");
+    free(text);
+
+    /* A list of one at least, and the shell a command takes. */
+    int        shell = 0;
+    bool       completion = false;
+    KitCliArgs files = KIT_ZEROED;
+    KitCliOpt  some[] = { KIT_CLI_ARGS_REQUIRED("FILE", "Files", &files) };
+    text = usage_text(some, KIT_COUNTOF(some));
+    if (CHECK(text != NULL)) CHECK(strstr(text, "Usage: tool <FILE>...\n") != NULL);
+    free(text);
+
+    KitCliOpt completion_opts[] = { KIT_CLI_ARG_CHOICE(KIT_CLI_SHELLS, "The shell", &shell) };
+    KitCliOpt root[] = {
+        KIT_CLI_HELP   ('h', "help", "Show this help", &help),
+        KIT_CLI_COMMAND("completion", "Print the script", completion_opts, &completion),
+    };
+    {   ARGV("completion", "--help");
+        CHECK(kit_cli_parse_arr(root, &argc, &argv, NULL));
+    }
+    text = usage_text(root, KIT_COUNTOF(root));
+    if (CHECK(text != NULL))
+        CHECK(strstr(text, "Usage: tool completion [options] <bash|zsh|fish|powershell>\n") != NULL);
+    free(text);
+}
+
+TEST(cli_complete_offers_what_each_argument_expects) {
+    bool       help = false, completion = false, read = false, count = false;
+    int        shell = 0, n = 0;
+    const char *file = NULL;
+    KitCliArgs more = KIT_ZEROED;
+
+    KitCliOpt completion_opts[] = { KIT_CLI_ARG_CHOICE(KIT_CLI_SHELLS, "The shell", &shell) };
+    KitCliOpt read_opts[] = {
+        KIT_CLI_ARG ("FILE", "The file to read", &file),
+        KIT_CLI_ARGS("MORE", "Read after it",    &more),
+    };
+    KitCliOpt count_opts[] = {
+        { 0, NULL, KIT_CLI_OPT_INT, "N", "How many", &n, NULL, 0, KIT_CLI_ONE },
+    };
+    KitCliOpt opts[] = {
+        KIT_CLI_HELP   ('h', "help", "Show this help", &help),
+        KIT_CLI_COMMAND("completion", "Print the script", completion_opts, &completion),
+        KIT_CLI_COMMAND("read",       "Read files",       read_opts,       &read),
+        KIT_CLI_COMMAND("count",      "Count to N",       count_opts,      &count),
+    };
+
+    CHECK_ANSWER("bash\nzsh\nfish\npowershell\n:none\n", "completion", "");
+    CHECK_ANSWER("zsh\n:none\n", "completion", "z");
+    CHECK_ANSWER("bash\nzsh\nfish\npowershell\n:none\n", "completion", "-h", "");
+
+    /* Every declared argument given: nothing more belongs on the line. */
+    CHECK_ANSWER(":none\n", "completion", "zsh", "");
+
+    /* After "--" with nothing to take it, the word is still the argument. */
+    CHECK_ANSWER("bash\nzsh\nfish\npowershell\n:none\n", "completion", "--", "");
+
+    /* A string and a list of them take file names, a number nothing. */
+    CHECK_ANSWER(":files\n", "read", "");
+    CHECK_ANSWER(":files\n", "read", "a", "b", "");
+    CHECK_ANSWER(":none\n", "count", "");
 }
 
 /* --- stopwatch ------------------------------------------------------------ */
@@ -1210,7 +1496,14 @@ int main(int argc, char **argv) {
     RUN(cli_complete_offers_what_the_tables_allow);
     RUN(cli_complete_keeps_each_description_to_one_line);
     RUN(cli_completion_script_registers_the_command_as_typed);
+    RUN(cli_completion_shells_are_listed_in_the_enum_order);
     RUN(cli_completion_script_refuses_what_it_cannot_write);
+    RUN(cli_positionals_fill_the_declared_arguments);
+    RUN(cli_positional_lists_leave_what_the_next_arguments_need);
+    RUN(cli_positionals_check_their_type);
+    RUN(cli_help_waives_what_the_line_lacks);
+    RUN(cli_usage_names_the_positional_arguments);
+    RUN(cli_complete_offers_what_each_argument_expects);
     RUN(timer_measures_forward);
     RUN(scalar_helpers);
     RUN(vector_helpers);

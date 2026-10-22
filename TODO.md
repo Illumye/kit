@@ -153,13 +153,15 @@ compiler accepts. `-pedantic` says so; nothing else does.
 both yield two fields. Distinguishing them needs a state bit hidden inside the
 `KitStr`, which costs more than it is worth.
 
-**Completion knows options and commands, not positional arguments.** A
-table describes what a command takes after a dash and which commands follow
-it, never what its plain arguments are, so every positional argument is
-completed as a file name: `build completion <TAB>` offers files where only
-four shell names fit. Describing the arguments a command takes is the step
-after this one. A value attached to a short option, as in `-ofile`, gets no
-file names either, since no shell completes inside such a word.
+**A value attached to a short option gets no file names.** `-ofile` is a
+single word to every shell, and none of them completes inside one: `-o file`
+and `--output=file` are completed, the attached form is not.
+
+**A table that declares no positional argument keeps every word unchecked.**
+That is what keeps the tables written before positional arguments existed
+working as they did. A command that must refuse stray words either declares
+what it takes or checks argc itself, as `build run` does to say where the
+program's own arguments go.
 
 **bash shows no descriptions.** zsh, fish and PowerShell print each
 candidate's help beside it. bash has no place for one, and the tricks that

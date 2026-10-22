@@ -198,7 +198,7 @@ int main(int argc, char **argv) {
 
     bool       verbose = false, help = false;
     bool       do_run  = false, do_clean = false, do_completion = false;
-    int        color   = KIT_LOG_COLOR_AUTO;
+    int        color   = KIT_LOG_COLOR_AUTO, shell = KIT_CLI_SHELL_BASH;
     KitCliArgs passed  = KIT_ZEROED;
 
     /* -v and -h belong to the outer table, so they work after a command as
@@ -206,13 +206,19 @@ int main(int argc, char **argv) {
     KitCliOpt run_opts[] = {
         KIT_CLI_REST("ARGS", "Handed to the program", &passed),
     };
+    /* The shell is a choice, so TAB offers the four, and a fifth is refused
+     * with their names before anything is printed. */
+    KitCliOpt completion_opts[] = {
+        KIT_CLI_ARG_CHOICE(KIT_CLI_SHELLS, "The shell to write for", &shell),
+    };
     KitCliOpt opts[] = {
         KIT_CLI_FLAG        ('v', "verbose", "Echo every command", &verbose),
         KIT_CLI_CHOICE      (0,   "color",   "auto|always|never", "When to colour the log", &color),
-        KIT_CLI_FLAG        ('h', "help",    "Show this help",     &help),
+        KIT_CLI_HELP        ('h', "help",    "Show this help",     &help),
         KIT_CLI_COMMAND     ("run",   "Build, then run the program", run_opts, &do_run),
         KIT_CLI_COMMAND_BARE("clean", "Remove the build directory",            &do_clean),
-        KIT_CLI_COMMAND_BARE("completion", "Print the TAB completion for a shell", &do_completion),
+        KIT_CLI_COMMAND     ("completion", "Print the TAB completion for a shell",
+                             completion_opts, &do_completion),
     };
 
     /* A shell asking what TAB should offer gets its answer from the same
@@ -232,15 +238,13 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* completion takes the name of a shell and prints what that shell
-     * evaluates to send every TAB on a build command line back here. */
+    /* What that shell evaluates to send every TAB on a build command line
+     * back here. The parser has already checked the shell. */
     if (do_completion) {
         KitError err = KIT_ZEROED;
-        bool     ok  = argc <= 1
-            ? kit_cli_completion_script(stdout, prog, argc == 1 ? argv[0] : NULL, &err)
-            : kit_error_set(&err, KIT_ERR_INVALID, "unexpected '%s' after the shell", argv[1]);
-        if (!ok) KIT_ERROR("%s", err.message);
-        return ok ? 0 : 1;
+        if (kit_cli_completion_script(stdout, prog, (KitCliShell)shell, &err)) return 0;
+        KIT_ERROR("%s", err.message);
+        return 1;
     }
 
     /* Neither run nor clean takes an argument of its own. One typed anyway

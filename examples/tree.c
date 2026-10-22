@@ -154,19 +154,21 @@ int main(int argc, char **argv) {
 
     int  depth = 2, largest = 3;
     bool help  = false;
-    const char *match = "*";
+    const char *match = "*", *root = ".";
     KitCliOpt opts[] = {
-        KIT_CLI_INT ('d', "depth",   "N",    "How deep to go",             &depth),
-        KIT_CLI_INT ('l', "largest", "N",    "How many big files to name", &largest),
-        KIT_CLI_STR ('m', "match",   "GLOB", "Only files matching this",   &match),
-        KIT_CLI_FLAG('h', "help",    "Show this help",                     &help),
+        KIT_CLI_INT         ('d', "depth",   "N",    "How deep to go",             &depth),
+        KIT_CLI_INT         ('l', "largest", "N",    "How many big files to name", &largest),
+        KIT_CLI_STR         ('m', "match",   "GLOB", "Only files matching this",   &match),
+        KIT_CLI_HELP        ('h', "help",    "Show this help",                     &help),
+        KIT_CLI_ARG_OPTIONAL("DIR", "Where to start, the current directory if none", &root),
     };
+
+    /* A second directory used to be dropped without a word; the parser now
+     * refuses it, since the walk only ever takes one. */
+    kit_log_set_fields(KIT_LOG_FIELD_LEVEL);
     if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) return 1;
     if (help) { kit_cli_usage_arr(stdout, prog, opts); return 0; }
 
-    kit_log_set_fields(KIT_LOG_FIELD_LEVEL);
-
-    const char *root = argc > 0 ? argv[0] : ".";
     if (!kit_fs_is_dir(root)) {
         KIT_ERROR("%s is not a directory", root);
         return 1;

@@ -156,6 +156,8 @@ check-examples: $(EXAMPLE_BIN)
 	@./examples/build run -h | grep -qF -e '-- <ARGS>...'
 	@./examples/build __complete --color=n | grep -q '^--color=never$$'
 	@./examples/build __complete run -- '' | grep -q '^:files$$'
+	@./examples/build __complete completion '' | grep -q '^powershell$$'
+	@./examples/build completion tcsh 2>&1 | grep -q 'expected one of bash, zsh, fish, powershell'
 	@./examples/build    2>&1 | grep -q '0 file(s) compiled'
 	@./examples/build --color=always 2>&1 | grep -q "$$(printf '\033')"
 	@! ./examples/build --color=never 2>&1 | grep -q "$$(printf '\033')"
@@ -171,6 +173,7 @@ check-examples: $(EXAMPLE_BIN)
 	 exit $$rc
 	@./examples/build clean > /dev/null 2>&1
 	@./examples/peek --help > /dev/null
+	@./examples/peek 2>&1 | grep -q 'missing <FILE>'
 	@./examples/peek examples/demo/app.conf | grep -q '|# The server the|'
 	@./examples/peek -n16 -o=16 examples/demo/prose.txt | grep -q '^00000010'
 	@./examples/peek examples/demo 2>&1 | grep -q 'is a directory'
@@ -186,6 +189,7 @@ check-examples: $(EXAMPLE_BIN)
 	@./examples/tree --depth 2 examples/demo | grep -q 'app.conf'
 	@./examples/tree --depth 2 --largest 2 examples/demo | grep -q 'largest 2'
 	@./examples/tree --depth 2 --match '*.conf' examples/demo | grep -q '2 files'
+	@./examples/tree examples examples/demo 2>&1 | grep -q "unexpected argument 'examples/demo'"
 	@./examples/orbit --bodies 3 --steps 50 | grep -q 'spin axis'
 	@./examples/runner -- echo hello | grep -q '^hello$$'
 	@./examples/runner -- sh -c 'for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo line $$i; done; exit 7' 2>&1 \

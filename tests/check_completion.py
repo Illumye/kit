@@ -40,6 +40,7 @@ INSERTIONS = [
     ("build ru",                       "build run"),
     ("build com",                      "build completion"),
     ("build -v run --verb",            "build -v run --verbose"),
+    ("build completion z",             "build completion zsh"),
 ]
 
 # The same, where the shell's own file completion takes over. Only a line
@@ -54,6 +55,7 @@ OFFERS = [
     ("build ",                         ["run", "clean", "completion"]),
     ("build --color=",                 ["auto", "always", "never"]),
     ("build -",                        ["--verbose", "--color", "--help"]),
+    ("build completion ",              ["bash", "zsh", "fish", "powershell"]),
 ]
 
 

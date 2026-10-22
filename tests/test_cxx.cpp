@@ -111,28 +111,38 @@ TEST(cxx_cli_tables_that_point_to_tables) {
     /* The entry macros are brace lists in both languages, and a command entry
      * holds the address and the length of another table. Until the commands
      * came, no table had ever been compiled as C++. */
-    bool       build = false, release = false;
-    int        when  = 0;
-    KitCliArgs passed = KIT_ZEROED;
+    bool        build = false, release = false, help = false;
+    int         when  = 0, shell = 0;
+    const char *target = NULL;
+    KitCliArgs  passed = KIT_ZEROED, more = KIT_ZEROED;
 
     KitCliOpt build_opts[] = {
         KIT_CLI_FLAG  ('r', "release", "release", &release),
         KIT_CLI_CHOICE(0,   "color", "auto|always|never", "when", &when),
+        KIT_CLI_ARG   ("TARGET", "target", &target),
+        KIT_CLI_ARGS  ("MORE", "more", &more),
         KIT_CLI_REST  ("ARGS", "args", &passed),
     };
+    KitCliOpt completion_opts[] = {
+        KIT_CLI_ARG_CHOICE(KIT_CLI_SHELLS, "shell", &shell),
+    };
     KitCliOpt opts[] = {
+        KIT_CLI_HELP        ('h', "help", "help", &help),
         KIT_CLI_COMMAND     ("build", "build", build_opts, &build),
+        KIT_CLI_COMMAND     ("completion", "completion", completion_opts, &build),
         KIT_CLI_COMMAND_BARE("clean", "clean", &build),
     };
 
-    const char *storage[] = { "build", "-r", "--color=never", "--", "x" };
-    int    argc = 5;
+    const char *storage[] = { "build", "-r", "native", "--color=never", "--", "x" };
+    int    argc = 6;
     char **argv = const_cast<char **>(storage);
     CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
     CHECK(build);
     CHECK(release);
     CHECK_INT(when, 2);
-    CHECK_INT(argc, 0);
+    CHECK_STR(target, "native");
+    CHECK_INT(more.count, 0);
+    CHECK_INT(argc, 1);
     if (CHECK_INT(passed.count, 1)) CHECK_STR(passed.items[0], "x");
 }
 
