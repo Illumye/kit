@@ -107,6 +107,32 @@ TEST(cxx_hash_map_and_paths) {
     CHECK(kit_str_ends_with_cstr(KIT_STR(buf), "out.o"));
 }
 
+TEST(cxx_cli_tables_that_point_to_tables) {
+    /* The entry macros are brace lists in both languages, and a command entry
+     * holds the address and the length of another table. Until the commands
+     * came, no table had ever been compiled as C++. */
+    bool       build = false, release = false;
+    KitCliArgs passed = KIT_ZEROED;
+
+    KitCliOpt build_opts[] = {
+        KIT_CLI_FLAG('r', "release", "release", &release),
+        KIT_CLI_REST("ARGS", "args", &passed),
+    };
+    KitCliOpt opts[] = {
+        KIT_CLI_COMMAND     ("build", "build", build_opts, &build),
+        KIT_CLI_COMMAND_BARE("clean", "clean", &build),
+    };
+
+    const char *storage[] = { "build", "-r", "--", "x" };
+    int    argc = 4;
+    char **argv = const_cast<char **>(storage);
+    CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+    CHECK(build);
+    CHECK(release);
+    CHECK_INT(argc, 0);
+    if (CHECK_INT(passed.count, 1)) CHECK_STR(passed.items[0], "x");
+}
+
 int main(void) {
     kit_log_set_level(KIT_LOG_CRITICAL);
     utest_begin("c++");
@@ -116,5 +142,6 @@ int main(void) {
     RUN(cxx_fs_stale1_is_a_function_now);
     RUN(cxx_interop_with_the_standard_library);
     RUN(cxx_hash_map_and_paths);
+    RUN(cxx_cli_tables_that_point_to_tables);
     return utest_report();
 }

@@ -2,9 +2,13 @@
  * A build tool in one file, using nothing but kit.h.
  *
  * It compiles examples/demo into an executable and skips the work it can.
- * This is the integration test the unit suites cannot be: it puts the option
- * parser, the filesystem layer, the temporary allocator, the command runner
- * and the logger to work together.
+ * This is the integration test the unit suites cannot be: it puts the command
+ * line parser, the filesystem layer, the temporary allocator, the command
+ * runner and the logger to work together.
+ *
+ * Its command line has the shape of cargo's: a command after the options,
+ * and after "--" whatever the program it runs should receive. Naming no
+ * command builds, which is what the tool is for.
  *
  * What makes an object out of date is decided on content rather than on
  * timestamps: each one carries the SHA-256 of the source and headers it was
@@ -25,9 +29,9 @@
  *   in the way
  *
  *   cc -o build examples/build.c && ./build
- *   ./build -v            show every command
- *   ./build --clean       remove the build directory
- *   ./build -j            (not implemented, see below)
+ *   ./build -v                show every command
+ *   ./build run -- Ada Alan   build, then greet two people
+ *   ./build clean             remove the build directory
  */
 
 #define KIT_IMPLEMENTATION
@@ -189,13 +193,24 @@ static bool clean(KitError *err) {
 int main(int argc, char **argv) {
     const char *prog = kit_cli_shift(&argc, &argv);
 
-    bool verbose = false, do_clean = false, run = false, help = false;
-    KitCliOpt opts[] = {
-        KIT_CLI_FLAG('v', "verbose", "Echo every command",        &verbose),
-        KIT_CLI_FLAG('c', "clean",   "Remove the build directory", &do_clean),
-        KIT_CLI_FLAG('r', "run",     "Run the target once built",  &run),
-        KIT_CLI_FLAG('h', "help",    "Show this help",             &help),
+    bool       verbose = false, help = false, do_run = false, do_clean = false;
+    KitCliArgs passed  = KIT_ZEROED;
+
+    /* -v and -h belong to the outer table, so they work after a command as
+     * well as before it: ./build run -v. */
+    KitCliOpt run_opts[] = {
+        KIT_CLI_REST("ARGS", "Handed to the program", &passed),
     };
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG        ('v', "verbose", "Echo every command", &verbose),
+        KIT_CLI_FLAG        ('h', "help",    "Show this help",     &help),
+        KIT_CLI_COMMAND     ("run",   "Build, then run the program", run_opts, &do_run),
+        KIT_CLI_COMMAND_BARE("clean", "Remove the build directory",            &do_clean),
+    };
+
+    /* The location field is noise for a build log, and for a mistake on the
+     * command line it would point into kit.h. */
+    kit_log_set_fields(KIT_LOG_FIELD_TIME | KIT_LOG_FIELD_LEVEL);
 
     if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) {
         kit_cli_usage_arr(stderr, prog, opts);
@@ -206,10 +221,18 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* Quiet by default: only what the user needs, and the commands on -v.
-     * The location field is noise for a build log. */
+    /* Neither command takes an argument of its own. One typed anyway after
+     * run was most likely meant for the program, and running it without the
+     * argument would hide the mistake. */
+    if (argc > 0) {
+        KIT_ERROR("unexpected '%s'%s", argv[0],
+                  do_run ? ": what the program receives goes after --" : "");
+        kit_cli_usage_arr(stderr, prog, opts);
+        return 1;
+    }
+
+    /* Quiet by default: only what the user needs, and the commands on -v. */
     kit_log_set_level(verbose ? KIT_LOG_DEBUG : KIT_LOG_INFO);
-    kit_log_set_fields(KIT_LOG_FIELD_TIME | KIT_LOG_FIELD_LEVEL);
 
     KitError err = KIT_ZEROED;
 
@@ -254,11 +277,13 @@ int main(int argc, char **argv) {
     }
     KIT_INFO("%s ready (%zu file(s) compiled)", TARGET, compiled);
 
-    if (run) {
+    if (do_run) {
         /* A KitCommand rather than the shorthand, because the failure of the
-         * program we just built is worth reporting properly. */
+         * program we just built is worth reporting properly. What followed --
+         * reaches it untouched, dashes and all. */
         KitCommand target = KIT_ZEROED;
         kit_command_push(&target, TARGET);
+        for (size_t i = 0; i < passed.count; i++) kit_command_push(&target, passed.items[i]);
         bool ran = kit_command_run(&target, &err);
         kit_command_free(&target);
         if (!ran) goto done;

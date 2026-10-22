@@ -546,6 +546,334 @@ TEST(cli_parse_failures_carry_a_message_for_the_user) {
       CHECK(strstr(err.message, " in ") == NULL); }
 }
 
+/* --- commands ------------------------------------------------------------- */
+
+/* What kit_cli_usage prints for a table, as a heap string. Written in binary
+ * mode so that Windows keeps the newlines the library wrote. */
+static char *usage_text(const KitCliOpt *opts, size_t n_opts) {
+    const char *path = "utest-tmp-usage.txt";
+    FILE       *fp   = fopen(path, "wb");
+    if (!fp) return NULL;
+    kit_cli_usage(fp, "tool", opts, n_opts);
+    fclose(fp);
+    char *text = kit_fs_read(path, NULL);
+    remove(path);
+    return text;
+}
+
+/* The table is data a program can read back, so what each macro writes into
+ * an entry is part of the contract. */
+TEST(cli_command_tables_say_what_their_entries_are) {
+    bool        flag = false, command = false;
+    const char *text = "";
+    int         number = 0;
+    KitCliArgs  passed = KIT_ZEROED;
+
+    KitCliOpt inner[] = {
+        KIT_CLI_FLAG('f', "flag",   "a switch", &flag),
+        KIT_CLI_STR ('s', "string", "S", "a string", &text),
+        KIT_CLI_INT ('n', "number", "N", "a number", &number),
+        KIT_CLI_REST("ARGS", "passed on", &passed),
+    };
+    KitCliOpt opts[] = {
+        KIT_CLI_COMMAND     ("outer", "with a table", inner, &command),
+        KIT_CLI_COMMAND_BARE("bare",  "without one",  &command),
+    };
+
+    CHECK(inner[0].type == KIT_CLI_OPT_FLAG);
+    CHECK(inner[1].type == KIT_CLI_OPT_STR);
+    CHECK(inner[2].type == KIT_CLI_OPT_INT);
+    CHECK(inner[0].opts == NULL && inner[0].n_opts == 0);
+
+    CHECK(inner[3].type == KIT_CLI_OPT_REST);
+    CHECK(inner[3].long_name == NULL);
+    CHECK_STR(inner[3].meta, "ARGS");
+    CHECK(inner[3].dst == &passed);
+
+    CHECK(opts[0].type == KIT_CLI_OPT_COMMAND);
+    CHECK_STR(opts[0].long_name, "outer");
+    CHECK(opts[0].opts == inner);
+    CHECK_INT(opts[0].n_opts, 4);
+    CHECK(opts[1].type == KIT_CLI_OPT_COMMAND);
+    CHECK(opts[1].opts == NULL);
+    CHECK_INT(opts[1].n_opts, 0);
+}
+
+TEST(cli_commands_choose_the_table_that_reads_the_rest) {
+    bool verbose = false, release = false, build = false, clean = false;
+
+    KitCliOpt build_opts[] = {
+        KIT_CLI_FLAG('r', "release", "release", &release),
+    };
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG        ('v', "verbose", "verbose", &verbose),
+        KIT_CLI_COMMAND     ("build", "build", build_opts, &build),
+        KIT_CLI_COMMAND_BARE("clean", "clean", &clean),
+    };
+
+    {   /* global options before, the command's own after, its arguments left */
+        ARGV("-v", "build", "-r", "a.c", "b.c");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        CHECK(verbose); CHECK(build); CHECK(release); CHECK(!clean);
+        CHECK_INT(argc, 2);
+        CHECK_STR(argv[0], "a.c");
+        CHECK_STR(argv[1], "b.c");
+    }
+    {   /* the enclosing table still applies once the command is named */
+        verbose = release = build = false;
+        ARGV("build", "a.c", "--verbose", "-rv");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        CHECK(build); CHECK(verbose); CHECK(release);
+        CHECK_INT(argc, 1);
+        CHECK_STR(argv[0], "a.c");
+    }
+    {   /* a bare command takes the enclosing options and nothing more */
+        verbose = false;
+        ARGV("clean", "-v");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        CHECK(clean); CHECK(verbose);
+        CHECK_INT(argc, 0);
+    }
+    {   /* naming no command is not an error: what it means is the program's call */
+        verbose = build = clean = false;
+        ARGV("-v");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        CHECK(verbose); CHECK(!build); CHECK(!clean);
+        CHECK_INT(argc, 0);
+    }
+}
+
+TEST(cli_commands_nest_and_the_innermost_name_wins) {
+    bool        remote = false, add = false, all = false, force = false;
+    const char *format = "text";
+
+    KitCliOpt add_opts[] = {
+        KIT_CLI_FLAG('f', "force", "force", &force),
+    };
+    KitCliOpt remote_opts[] = {
+        KIT_CLI_FLAG   ('a', "all", "all", &all),
+        KIT_CLI_COMMAND("add", "add", add_opts, &add),
+    };
+    KitCliOpt opts[] = {
+        KIT_CLI_STR    ('f', "format", "FMT", "format", &format),
+        KIT_CLI_COMMAND("remote", "remote", remote_opts, &remote),
+    };
+
+    {   /* both enclosing tables reach the innermost command */
+        ARGV("remote", "add", "-a", "--format=json", "origin", "-f");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        CHECK(remote); CHECK(add); CHECK(all);
+        CHECK_STR(format, "json");
+        CHECK(force);                       /* add's own -f, not the root's */
+        CHECK_INT(argc, 1);
+        CHECK_STR(argv[0], "origin");
+    }
+    {   /* before the command, the same letter is still the root's */
+        remote = add = force = false;
+        ARGV("-f", "yaml", "remote", "add");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        CHECK_STR(format, "yaml");
+        CHECK(!force);
+    }
+    {   /* a table with commands wants one before any positional argument */
+        KitError err = KIT_ZEROED;
+        ARGV("remote", "origin");
+        CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+        CHECK(failed_with(&err, KIT_ERR_INVALID, "unknown command 'origin'"));
+    }
+}
+
+TEST(cli_commands_refuse_what_their_tables_do_not_know) {
+    bool release = false, build = false;
+    KitCliOpt build_opts[] = { KIT_CLI_FLAG('r', "release", "release", &release) };
+    KitCliOpt opts[]       = { KIT_CLI_COMMAND("build", "build", build_opts, &build) };
+
+    KitError err = KIT_ZEROED;
+    { ARGV("biuld");
+      CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID, "unknown command 'biuld'")); }
+
+    /* A command's options come after it. */
+    kit_error_clear(&err);
+    { ARGV("--release", "build");
+      CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID, "unknown option '--release'")); }
+
+    /* A command is named as a word, never as an option. */
+    kit_error_clear(&err);
+    { ARGV("--build");
+      CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID, "unknown option '--build'")); }
+
+    /* A positional argument where the command should be. */
+    kit_error_clear(&err);
+    { ARGV("a.c", "build");
+      CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID, "unknown command 'a.c'")); }
+}
+
+/* A table that leads back to itself would let the line nest commands for as
+ * long as it goes on. The bound turns that into an error, and the usage,
+ * which follows the same chain, stops at the same place. */
+TEST(cli_commands_nest_to_a_bound) {
+    bool      again = false;
+    KitCliOpt loop[1];
+    loop[0] = (KitCliOpt)KIT_CLI_COMMAND("again", "again", loop, &again);
+
+    {   ARGV("again", "again", "again", "again", "again", "again", "again", "again",
+             "again", "again", "again", "again", "again", "again", "again");
+        CHECK(kit_cli_parse_arr(loop, &argc, &argv, NULL));
+        CHECK(again);
+    }
+    {   KitError err = KIT_ZEROED;
+        ARGV("again", "again", "again", "again", "again", "again", "again", "again",
+             "again", "again", "again", "again", "again", "again", "again", "again");
+        CHECK(!kit_cli_parse_arr(loop, &argc, &argv, &err));
+        CHECK(failed_with(&err, KIT_ERR_RANGE, "cannot nest more than 16 deep"));
+    }
+
+    char *text = usage_text(loop, KIT_COUNTOF(loop));
+    if (CHECK(text != NULL)) CHECK(strstr(text, "Usage: tool again again ") != NULL);
+    free(text);
+}
+
+TEST(cli_rest_keeps_apart_what_follows_the_double_dash) {
+    bool       verbose = false, run = false;
+    KitCliArgs passed  = KIT_ZEROED;
+
+    KitCliOpt run_opts[] = {
+        KIT_CLI_REST("ARGS", "args", &passed),
+    };
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG   ('v', "verbose", "verbose", &verbose),
+        KIT_CLI_COMMAND("run", "run", run_opts, &run),
+    };
+
+    {   /* the command's own arguments on one side, the rest on the other, and
+         * the rest still ends on argv's NULL, which is what exec expects */
+        const char *storage[] = { "run", "a.c", "--", "--port", "8080", NULL };
+        int    argc = 5;
+        char **argv = (char **)(void *)storage;
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        CHECK(run);
+        CHECK_INT(argc, 1);
+        CHECK_STR(argv[0], "a.c");
+        if (CHECK_INT(passed.count, 2)) {
+            CHECK_STR(passed.items[0], "--port");
+            CHECK_STR(passed.items[1], "8080");
+            CHECK(passed.items[2] == NULL);
+        }
+    }
+    {   /* "--" and nothing after it: an empty list, not a missing one */
+        passed.items = NULL; passed.count = 0;
+        ARGV("run", "--");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        CHECK(passed.items != NULL);
+        CHECK_INT(passed.count, 0);
+        CHECK_INT(argc, 0);
+    }
+    {   /* with no REST in force they join the positional arguments, and what
+         * follows "--" is never a command either */
+        passed.items = NULL; passed.count = 0; run = false;
+        ARGV("-v", "--", "run", "-v");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+        CHECK(!run);
+        CHECK(passed.items == NULL);
+        CHECK_INT(argc, 2);
+        CHECK_STR(argv[0], "run");
+        CHECK_STR(argv[1], "-v");
+    }
+
+    /* A REST in an enclosing table applies inside its commands, as an option
+     * would. */
+    bool       build = false;
+    KitCliArgs outer = KIT_ZEROED;
+    KitCliOpt  root[] = {
+        KIT_CLI_REST        ("ARGS", "args", &outer),
+        KIT_CLI_COMMAND_BARE("build", "build", &build),
+    };
+    {   ARGV("build", "x.c", "--", "-O2");
+        CHECK(kit_cli_parse_arr(root, &argc, &argv, NULL));
+        CHECK(build);
+        CHECK_INT(argc, 1);
+        if (CHECK_INT(outer.count, 1)) CHECK_STR(outer.items[0], "-O2");
+    }
+}
+
+TEST(cli_usage_without_commands_is_unchanged) {
+    bool        verbose = false;
+    const char *output  = "a.out";
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG('v', "verbose", "Say more", &verbose),
+        KIT_CLI_STR (0,   "output",  "FILE", "Where to write", &output),
+    };
+
+    char *text = usage_text(opts, KIT_COUNTOF(opts));
+    CHECK_STR(text, "Usage: tool [options] ...\n"
+                    "\n"
+                    "Options:\n"
+                    "  -v, --verbose                      Say more\n"
+                    "      --output=<FILE>                Where to write\n");
+    free(text);
+}
+
+TEST(cli_usage_follows_the_command_the_parse_chose) {
+    bool       verbose = false, recurse = false, release = false, build = false, run = false;
+    KitCliArgs passed  = KIT_ZEROED;
+
+    KitCliOpt build_opts[] = {
+        KIT_CLI_FLAG('r', "release", "Build with optimisations", &release),
+        KIT_CLI_REST("ARGS", "Handed to the compiler", &passed),
+    };
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG        ('v', "verbose", "Say more",  &verbose),
+        KIT_CLI_FLAG        ('r', "recurse", "Go deeper", &recurse),
+        KIT_CLI_COMMAND     ("build", "Compile it", build_opts, &build),
+        KIT_CLI_COMMAND_BARE("run",   "Run it",     &run),
+    };
+
+    /* Nothing named yet: the commands, then the options. */
+    char *text = usage_text(opts, KIT_COUNTOF(opts));
+    if (CHECK(text != NULL)) {
+        CHECK(strstr(text, "Usage: tool [options] [<command> ...]\n") != NULL);
+        CHECK(strstr(text, "\nCommands:\n  build ") != NULL);
+        CHECK(strstr(text, " Compile it\n  run ") != NULL);
+        CHECK(strstr(text, "\nOptions:\n  -v, --verbose ") != NULL);
+        CHECK(strstr(text, "Global options") == NULL);
+    }
+    free(text);
+
+    /* Once "build" is named, the usage is the command's. The root's -r is not
+     * listed under the letter build has taken over, only under its name. */
+    {   ARGV("build");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+    }
+    text = usage_text(opts, KIT_COUNTOF(opts));
+    if (CHECK(text != NULL)) {
+        CHECK(strstr(text, "Usage: tool build [options] ... [-- <ARGS>...]\n") != NULL);
+        CHECK(strstr(text, "\nOptions:\n  -r, --release ") != NULL);
+        CHECK(strstr(text, "\n      -- <ARGS>... ") != NULL);
+        CHECK(strstr(text, "\nGlobal options:\n  -v, --verbose ") != NULL);
+        CHECK(strstr(text, "\n      --recurse ") != NULL);
+        CHECK(strstr(text, "Commands:") == NULL);
+    }
+    free(text);
+
+    /* A bare command has no options of its own to list. */
+    build = false;
+    {   ARGV("run");
+        CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
+    }
+    text = usage_text(opts, KIT_COUNTOF(opts));
+    if (CHECK(text != NULL)) {
+        CHECK(strstr(text, "Usage: tool run [options] ...\n") != NULL);
+        CHECK(strstr(text, "\nOptions:") == NULL);
+        CHECK(strstr(text, "\nGlobal options:\n  -v, --verbose ") != NULL);
+        CHECK(strstr(text, "  -r, --recurse ") != NULL);
+    }
+    free(text);
+}
+
 /* --- stopwatch ------------------------------------------------------------ */
 
 TEST(timer_measures_forward) {
@@ -639,6 +967,14 @@ int main(int argc, char **argv) {
     RUN(command_exit_status_on_windows);
 #endif
     RUN(cli_parse_failures_carry_a_message_for_the_user);
+    RUN(cli_command_tables_say_what_their_entries_are);
+    RUN(cli_commands_choose_the_table_that_reads_the_rest);
+    RUN(cli_commands_nest_and_the_innermost_name_wins);
+    RUN(cli_commands_refuse_what_their_tables_do_not_know);
+    RUN(cli_commands_nest_to_a_bound);
+    RUN(cli_rest_keeps_apart_what_follows_the_double_dash);
+    RUN(cli_usage_without_commands_is_unchanged);
+    RUN(cli_usage_follows_the_command_the_parse_chose);
     RUN(timer_measures_forward);
     RUN(scalar_helpers);
     RUN(vector_helpers);

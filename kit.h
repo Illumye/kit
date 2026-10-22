@@ -1145,34 +1145,101 @@ char *kit_cli_shift(int *argc, char ***argv);
  *   --output file
  *   --output=file
  *   --            ends option parsing; remaining args are positional
+ *
+ * -- Commands ----------------------------------------------------------------
+ *
+ * A program built around commands, the way git and cargo are, describes them
+ * in the same table. Each command points to a table of its own, which may
+ * hold commands in turn:
+ *
+ *   KitCliOpt build_opts[] = {
+ *       KIT_CLI_FLAG('r', "release", "Build with optimisations", &release),
+ *   };
+ *   KitCliOpt run_opts[] = {
+ *       KIT_CLI_FLAG('r', "release", "Build with optimisations", &release),
+ *       KIT_CLI_REST("ARGS", "Handed to the program", &passed),
+ *   };
+ *   KitCliOpt opts[] = {
+ *       KIT_CLI_FLAG        ('v', "verbose", "Say more", &verbose),
+ *       KIT_CLI_COMMAND     ("build", "Compile the project",   build_opts, &build),
+ *       KIT_CLI_COMMAND     ("run",   "Build it, then run it", run_opts,   &run),
+ *       KIT_CLI_COMMAND_BARE("clean", "Remove what was built", &clean),
+ *   };
+ *
+ *   tool -v run --release -- --port 8080
+ *
+ * In a table with commands, the first positional argument must name one. Its
+ * bool is set, and the rest of the line is read against its table with the
+ * options of the enclosing tables still in force: `tool run -v` works too,
+ * and when both define a name, the command's own option wins. What is left
+ * in argc and argv are the command's positional arguments. A line that names
+ * no command is not an error: every bool stays false, and whether that calls
+ * for the usage is the program's decision. Like every destination, the bools
+ * are only ever set, never cleared, so they start out false.
+ *
+ * KIT_CLI_REST takes what follows "--" out of the positional arguments, so a
+ * command can tell its own arguments from the ones it passes on. Without one
+ * in force, they join the positional arguments.
  * -------------------------------------------------------------------------- */
 
-typedef enum { KIT_CLI_OPT_FLAG, KIT_CLI_OPT_STR, KIT_CLI_OPT_INT } KitCliOptType;
+/* What an entry is, and the type of its dst. */
+typedef enum {
+    KIT_CLI_OPT_FLAG,      /* bool *, set when the option is present */
+    KIT_CLI_OPT_STR,       /* const char **, the value as typed      */
+    KIT_CLI_OPT_INT,       /* int *                                  */
+    KIT_CLI_OPT_COMMAND,   /* bool *, set when the command is named  */
+    KIT_CLI_OPT_REST       /* KitCliArgs *, what follows "--"        */
+} KitCliOptType;
 
+typedef struct KitCliOpt KitCliOpt;
+struct KitCliOpt {
+    char             short_name; /* single char, or 0 */
+    const char      *long_name;  /* without leading "--", or NULL; a command's name */
+    KitCliOptType    type;
+    const char      *meta;       /* value placeholder shown in help, e.g. "FILE" */
+    const char      *help;
+    void            *dst;        /* see KitCliOptType */
+    const KitCliOpt *opts;       /* a command's own table, or NULL */
+    size_t           n_opts;
+};
+
+/* What followed "--", for KIT_CLI_REST. The items point into argv, so when
+ * argv came from main the list ends on its NULL, as exec expects. */
 typedef struct {
-    char        short_name; /* single char, or 0 */
-    const char *long_name;  /* without leading "--", or NULL */
-    KitCliOptType     type;
-    const char *meta;       /* value placeholder shown in help, e.g. "FILE" */
-    const char *help;
-    void       *dst;        /* bool* / const char** / int* */
-} KitCliOpt;
+    char  **items;
+    size_t  count;
+} KitCliArgs;
 
-#define KIT_CLI_FLAG(s, l,       help, dst) { (s), (l), KIT_CLI_OPT_FLAG, NULL,  (help), (dst) }
-#define KIT_CLI_STR( s, l, meta, help, dst) { (s), (l), KIT_CLI_OPT_STR,  (meta),(help), (dst) }
-#define KIT_CLI_INT( s, l, meta, help, dst) { (s), (l), KIT_CLI_OPT_INT,  (meta),(help), (dst) }
+#define KIT_CLI_FLAG(s, l,       help, dst) { (s), (l), KIT_CLI_OPT_FLAG, NULL,  (help), (dst), NULL, 0 }
+#define KIT_CLI_STR( s, l, meta, help, dst) { (s), (l), KIT_CLI_OPT_STR,  (meta),(help), (dst), NULL, 0 }
+#define KIT_CLI_INT( s, l, meta, help, dst) { (s), (l), KIT_CLI_OPT_INT,  (meta),(help), (dst), NULL, 0 }
+
+/* A command and its table. A command with no options of its own, which still
+ * takes those of the tables around it, is KIT_CLI_COMMAND_BARE: C has no
+ * empty array to count. */
+#define KIT_CLI_COMMAND(name, help, opts, dst) \
+    { 0, (name), KIT_CLI_OPT_COMMAND, NULL, (help), (dst), (opts), KIT_COUNTOF(opts) }
+#define KIT_CLI_COMMAND_BARE(name, help, dst) \
+    { 0, (name), KIT_CLI_OPT_COMMAND, NULL, (help), (dst), NULL, 0 }
+
+#define KIT_CLI_REST(meta, help, dst) { 0, NULL, KIT_CLI_OPT_REST, (meta), (help), (dst), NULL, 0 }
 
 /* Parse options in place. After the call, argc and argv hold only the
  * positional arguments.
  *
  * A malformed command line is KIT_ERR_INVALID, with a message meant to be
- * shown to whoever typed it: "unknown option '--verbse'". Passing NULL logs
- * it instead, which is what a program that prints its usage and exits wants.
+ * shown to whoever typed it: "unknown option '--verbse'", or "unknown command
+ * 'biuld'". Passing NULL logs it instead, which is what a program that prints
+ * its usage and exits wants.
  */
 bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv,
                    KitError *err);
 
-/* Print a formatted option summary to fp. */
+/* Print a formatted option summary to fp. With commands in the table, it
+ * describes what the last parse chose: the list of commands when none was
+ * named, otherwise the innermost command named, with the options it inherits
+ * listed apart. Printed after a parse that failed half way, it is the usage
+ * of the command the mistake was made in. */
 void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t n_opts);
 
 #define kit_cli_parse_arr(opts, argc, argv, err) \
@@ -3482,23 +3549,107 @@ char *kit_cli_shift(int *argc, char ***argv) {
     return result;
 }
 
-static KitCliOpt *kit__cli_find_short(KitCliOpt *opts, size_t n_opts, char c) {
+/* Tables nest one per command named on the line. Real programs stop at two or
+ * three; the bound is there for a table that leads back to itself. */
+#define KIT__CLI_MAX_DEPTH 16
+
+/* The tables in force at one point of the line, outermost first: the one the
+ * parser was given, then one per command named since. */
+typedef struct {
+    const KitCliOpt *tables[KIT__CLI_MAX_DEPTH];
+    size_t           counts[KIT__CLI_MAX_DEPTH];
+    size_t           depth;
+} Kit__CliScope;
+
+static void kit__cli_scope_init(Kit__CliScope *scope, const KitCliOpt *opts, size_t n_opts) {
+    scope->tables[0] = opts;
+    scope->counts[0] = n_opts;
+    scope->depth     = 1;
+}
+
+/* Makes a command's table the innermost one. False once the bound is hit. */
+static bool kit__cli_scope_push(Kit__CliScope *scope, const KitCliOpt *command) {
+    if (scope->depth == KIT__CLI_MAX_DEPTH) return false;
+    scope->tables[scope->depth] = command->opts;
+    scope->counts[scope->depth] = command->n_opts;
+    scope->depth++;
+    return true;
+}
+
+/* Only these answer to -x or --name. A command is named as a plain word, and
+ * the entry for what follows "--" has no name at all. */
+static bool kit__cli_is_option(const KitCliOpt *o) {
+    return o->type == KIT_CLI_OPT_FLAG || o->type == KIT_CLI_OPT_STR ||
+           o->type == KIT_CLI_OPT_INT;
+}
+
+static const KitCliOpt *kit__cli_short_in(const KitCliOpt *opts, size_t n_opts, char c) {
     for (size_t i = 0; i < n_opts; i++)
-        if (opts[i].short_name && opts[i].short_name == c) return &opts[i];
+        if (kit__cli_is_option(&opts[i]) && c && opts[i].short_name == c) return &opts[i];
     return NULL;
 }
 
-static KitCliOpt *kit__cli_find_long(KitCliOpt *opts, size_t n_opts, const char *key, size_t len) {
+static const KitCliOpt *kit__cli_long_in(const KitCliOpt *opts, size_t n_opts,
+                                         const char *key, size_t len) {
     for (size_t i = 0; i < n_opts; i++) {
         const char *name = opts[i].long_name;
-        if (name && strlen(name) == len && strncmp(name, key, len) == 0)
+        if (kit__cli_is_option(&opts[i]) && name && strlen(name) == len &&
+            strncmp(name, key, len) == 0)
             return &opts[i];
     }
     return NULL;
 }
 
+static const KitCliOpt *kit__cli_rest_in(const KitCliOpt *opts, size_t n_opts) {
+    for (size_t i = 0; i < n_opts; i++)
+        if (opts[i].type == KIT_CLI_OPT_REST) return &opts[i];
+    return NULL;
+}
+
+static bool kit__cli_has_commands(const KitCliOpt *opts, size_t n_opts) {
+    for (size_t i = 0; i < n_opts; i++)
+        if (opts[i].type == KIT_CLI_OPT_COMMAND) return true;
+    return false;
+}
+
+static const KitCliOpt *kit__cli_command_in(const KitCliOpt *opts, size_t n_opts,
+                                            const char *name) {
+    for (size_t i = 0; i < n_opts; i++)
+        if (opts[i].type == KIT_CLI_OPT_COMMAND && opts[i].long_name &&
+            strcmp(opts[i].long_name, name) == 0)
+            return &opts[i];
+    return NULL;
+}
+
+/* The innermost table is searched first, which is what lets a command take
+ * over a name that the tables around it also use. */
+static const KitCliOpt *kit__cli_find_short(const Kit__CliScope *scope, char c) {
+    for (size_t d = scope->depth; d-- > 0; ) {
+        const KitCliOpt *o = kit__cli_short_in(scope->tables[d], scope->counts[d], c);
+        if (o) return o;
+    }
+    return NULL;
+}
+
+static const KitCliOpt *kit__cli_find_long(const Kit__CliScope *scope,
+                                           const char *key, size_t len) {
+    for (size_t d = scope->depth; d-- > 0; ) {
+        const KitCliOpt *o = kit__cli_long_in(scope->tables[d], scope->counts[d], key, len);
+        if (o) return o;
+    }
+    return NULL;
+}
+
+static const KitCliOpt *kit__cli_find_rest(const Kit__CliScope *scope) {
+    for (size_t d = scope->depth; d-- > 0; ) {
+        const KitCliOpt *o = kit__cli_rest_in(scope->tables[d], scope->counts[d]);
+        if (o) return o;
+    }
+    return NULL;
+}
+
 /* `origin` is the argument as the user typed it, quoted back in errors. */
-static bool kit__cli_assign(KitCliOpt *o, const char *val, const char *origin,
+static bool kit__cli_assign(const KitCliOpt *o, const char *val, const char *origin,
                             KitError *err) {
     if (o->type == KIT_CLI_OPT_STR) {
         *(const char **)o->dst = val;
@@ -3518,11 +3669,11 @@ static bool kit__cli_assign(KitCliOpt *o, const char *val, const char *origin,
 
 /* Walks one "-abc" token. Flags chain; the first option that takes a value
  * consumes whatever follows it, or the next argument when nothing does. */
-static bool kit__cli_parse_short_group(KitCliOpt *opts, size_t n_opts, const char *arg,
+static bool kit__cli_parse_short_group(const Kit__CliScope *scope, const char *arg,
                                        int *i, int argc, char **argv, KitError *err) {
     for (const char *c = arg + 1; *c; ) {
-        char  name  = *c++;
-        KitCliOpt  *match = kit__cli_find_short(opts, n_opts, name);
+        char             name  = *c++;
+        const KitCliOpt *match = kit__cli_find_short(scope, name);
         if (!match) {
             /* The group is quoted back only when it holds more than the one
              * letter: "unknown option '-z' in '-z'" says the same thing twice. */
@@ -3558,25 +3709,52 @@ static bool kit__cli_parse_short_group(KitCliOpt *opts, size_t n_opts, const cha
 
 bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv,
                    KitError *err) {
-    char **args = *argv;
-    int    out  = 0;
+    char        **args = *argv;
+    int           out  = 0;
+    Kit__CliScope scope;
+    kit__cli_scope_init(&scope, opts, n_opts);
 
     for (int i = 0; i < *argc; i++) {
         char *arg = args[i];
 
         if (strcmp(arg, "--") == 0) {
-            while (++i < *argc) args[out++] = args[i];
+            const KitCliOpt *rest = kit__cli_find_rest(&scope);
+            if (rest) {
+                /* Left where it is: the positional arguments gathered so far
+                 * all sit before it, and argv's NULL still ends it. */
+                KitCliArgs *passed = (KitCliArgs *)rest->dst;
+                passed->items = args + i + 1;
+                passed->count = (size_t)(*argc - i - 1);
+            } else {
+                while (++i < *argc) args[out++] = args[i];
+            }
             break;
         }
 
-        /* Anything that is not "-x..." is positional, a lone "-" included. */
+        /* Anything that is not "-x..." is positional, a lone "-" included,
+         * unless the table in force has commands: then it has to name one. */
         if (arg[0] != '-' || arg[1] == '\0') {
-            args[out++] = arg;
+            const KitCliOpt *here   = scope.tables[scope.depth - 1];
+            size_t           n_here = scope.counts[scope.depth - 1];
+            if (!kit__cli_has_commands(here, n_here)) {
+                args[out++] = arg;
+                continue;
+            }
+
+            const KitCliOpt *command = kit__cli_command_in(here, n_here, arg);
+            if (!command)
+                return kit_error_set(err, KIT_ERR_INVALID, "unknown command '%s'", arg);
+            if (!kit__cli_scope_push(&scope, command)) {
+                return kit_error_set(err, KIT_ERR_RANGE,
+                                     "'%s': commands cannot nest more than %d deep",
+                                     arg, KIT__CLI_MAX_DEPTH);
+            }
+            *(bool *)command->dst = true;
             continue;
         }
 
         if (arg[1] != '-') {
-            if (!kit__cli_parse_short_group(opts, n_opts, arg, &i, *argc, args, err))
+            if (!kit__cli_parse_short_group(&scope, arg, &i, *argc, args, err))
                 return false;
             continue;
         }
@@ -3585,7 +3763,7 @@ bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv,
         const char *eq       = strchr(key, '=');
         size_t      key_len  = eq ? (size_t)(eq - key) : strlen(key);
 
-        KitCliOpt *match = kit__cli_find_long(opts, n_opts, key, key_len);
+        const KitCliOpt *match = kit__cli_find_long(&scope, key, key_len);
         if (!match) {
             return kit_error_set(err, KIT_ERR_INVALID, "unknown option '%s'", arg);
         }
@@ -3618,33 +3796,133 @@ bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv,
 
 /* The left column is built in a KitBuf rather than a fixed buffer, so a
  * long option name wraps instead of being cut off. */
-void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t n_opts) {
-    fprintf(fp, "Usage: %s [options] ...\n\nOptions:\n", program);
+static void kit__cli_usage_line(FILE *fp, KitBuf *left, const char *help) {
+    if (!help) help = "";
+    if (left->count > KIT__CLI_HELP_COLUMN)
+        fprintf(fp, "%s\n%*s %s\n", kit_buf_cstr(left), KIT__CLI_HELP_COLUMN, "", help);
+    else
+        fprintf(fp, "%-*s %s\n", KIT__CLI_HELP_COLUMN, kit_buf_cstr(left), help);
+}
 
-    KitBuf left = KIT_ZEROED;
-    for (size_t i = 0; i < n_opts; i++) {
-        const KitCliOpt *o = &opts[i];
-        kit_buf_reset(&left);
+/* An option under the names given, which for an inherited one are those no
+ * nearer table has taken over: typing the others reaches something else. */
+static void kit__cli_usage_option(FILE *fp, KitBuf *left, const KitCliOpt *o,
+                                  char short_name, const char *long_name) {
+    kit_buf_reset(left);
 
-        if (o->short_name) kit_buf_printf(&left, "  -%c", o->short_name);
-        else               kit_buf_append(&left, "    ");
-
-        if (o->short_name && o->long_name) kit_buf_append(&left, ", ");
-        else if (o->long_name)             kit_buf_append(&left, "  ");
-
-        if (o->long_name) {
-            if (o->meta) kit_buf_printf(&left, "--%s=<%s>", o->long_name, o->meta);
-            else         kit_buf_printf(&left, "--%s", o->long_name);
-        } else if (o->meta) {
-            kit_buf_printf(&left, " <%s>", o->meta);
-        }
-
-        const char *help = o->help ? o->help : "";
-        if (left.count > KIT__CLI_HELP_COLUMN)
-            fprintf(fp, "%s\n%*s %s\n", kit_buf_cstr(&left), KIT__CLI_HELP_COLUMN, "", help);
-        else
-            fprintf(fp, "%-*s %s\n", KIT__CLI_HELP_COLUMN, kit_buf_cstr(&left), help);
+    if (o->type == KIT_CLI_OPT_REST) {
+        if (o->meta) kit_buf_printf(left, "      -- <%s>...", o->meta);
+        else         kit_buf_append(left, "      --");
+        kit__cli_usage_line(fp, left, o->help);
+        return;
     }
+
+    if (short_name) kit_buf_printf(left, "  -%c", short_name);
+    else            kit_buf_append(left, "    ");
+
+    if (short_name && long_name) kit_buf_append(left, ", ");
+    else if (long_name)          kit_buf_append(left, "  ");
+
+    if (long_name) {
+        if (o->meta) kit_buf_printf(left, "--%s=<%s>", long_name, o->meta);
+        else         kit_buf_printf(left, "--%s", long_name);
+    } else if (o->meta) {
+        kit_buf_printf(left, " <%s>", o->meta);
+    }
+    kit__cli_usage_line(fp, left, o->help);
+}
+
+/* The command the last parse named in a table, if it named one there. */
+static const KitCliOpt *kit__cli_chosen(const KitCliOpt *opts, size_t n_opts) {
+    for (size_t i = 0; i < n_opts; i++)
+        if (opts[i].type == KIT_CLI_OPT_COMMAND && opts[i].long_name && opts[i].dst &&
+            *(const bool *)opts[i].dst)
+            return &opts[i];
+    return NULL;
+}
+
+void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t n_opts) {
+    KitBuf invocation = KIT_ZEROED, left = KIT_ZEROED;
+    kit_buf_append(&invocation, program ? program : "program");
+
+    /* Down the commands the last parse chose, to the innermost one: that is
+     * the one whose usage was asked for, or the one a mistake was made in. */
+    Kit__CliScope scope;
+    kit__cli_scope_init(&scope, opts, n_opts);
+    for (;;) {
+        const KitCliOpt *chosen = kit__cli_chosen(scope.tables[scope.depth - 1],
+                                                  scope.counts[scope.depth - 1]);
+        if (!chosen || !kit__cli_scope_push(&scope, chosen)) break;
+        kit_buf_printf(&invocation, " %s", chosen->long_name);
+    }
+
+    const KitCliOpt *here     = scope.tables[scope.depth - 1];
+    size_t           n_here   = scope.counts[scope.depth - 1];
+    bool             commands = kit__cli_has_commands(here, n_here);
+    const KitCliOpt *rest     = kit__cli_find_rest(&scope);
+
+    bool options = false;
+    for (size_t d = 0; d < scope.depth; d++)
+        for (size_t i = 0; i < scope.counts[d]; i++)
+            options = options || kit__cli_is_option(&scope.tables[d][i]);
+
+    /* The command is in brackets because the parser does not insist on one:
+     * whether naming none is a mistake or the default action is the program's
+     * to decide, and its own check says which. */
+    fprintf(fp, "Usage: %s%s%s", kit_buf_cstr(&invocation),
+            options ? " [options]" : "", commands ? " [<command> ...]" : " ...");
+    if (rest) {
+        if (rest->meta) fprintf(fp, " [-- <%s>...]", rest->meta);
+        else            fputs(" [-- ...]", fp);
+    }
+    fputc('\n', fp);
+
+    if (commands) {
+        fputs("\nCommands:\n", fp);
+        for (size_t i = 0; i < n_here; i++) {
+            if (here[i].type != KIT_CLI_OPT_COMMAND || !here[i].long_name) continue;
+            kit_buf_reset(&left);
+            kit_buf_printf(&left, "  %s", here[i].long_name);
+            kit__cli_usage_line(fp, &left, here[i].help);
+        }
+    }
+
+    bool heading = false;
+    for (size_t i = 0; i < n_here; i++) {
+        const KitCliOpt *o = &here[i];
+        if (o->type == KIT_CLI_OPT_COMMAND) continue;
+        if (!heading) fputs("\nOptions:\n", fp);
+        heading = true;
+        kit__cli_usage_option(fp, &left, o, o->short_name, o->long_name);
+    }
+
+    /* What the enclosing tables still contribute, the nearest first. */
+    heading = false;
+    for (size_t d = scope.depth - 1; d-- > 0; ) {
+        for (size_t i = 0; i < scope.counts[d]; i++) {
+            const KitCliOpt *o = &scope.tables[d][i];
+            if (o->type == KIT_CLI_OPT_COMMAND) continue;
+            if (o->type == KIT_CLI_OPT_REST && o != rest) continue;
+
+            char        short_name = o->short_name;
+            const char *long_name  = o->long_name;
+            for (size_t near = d + 1; near < scope.depth; near++) {
+                const KitCliOpt *table = scope.tables[near];
+                size_t           count = scope.counts[near];
+                if (short_name && kit__cli_short_in(table, count, short_name))
+                    short_name = 0;
+                if (long_name && kit__cli_long_in(table, count, long_name, strlen(long_name)))
+                    long_name = NULL;
+            }
+            if (o->type != KIT_CLI_OPT_REST && !short_name && !long_name) continue;
+
+            if (!heading) fputs("\nGlobal options:\n", fp);
+            heading = true;
+            kit__cli_usage_option(fp, &left, o, short_name, long_name);
+        }
+    }
+
+    kit_buf_free(&invocation);
     kit_buf_free(&left);
 }
 

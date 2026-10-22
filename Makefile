@@ -149,8 +149,11 @@ examples/%: examples/%.c kit.h
 # build. check_coverage.sh additionally fails if any public name is exercised
 # nowhere, by an example or by a test.
 check-examples: $(EXAMPLE_BIN)
-	@./examples/build --clean > /dev/null 2>&1
-	@./examples/build -r 2>&1 | grep -q 'hello, world'
+	@./examples/build clean > /dev/null 2>&1
+	@./examples/build run 2>&1 | grep -q 'hello, world'
+	@./examples/build run -- Ada --Alan 2>&1 | grep -q '^hello, --Alan$$'
+	@./examples/build run Ada 2>&1 | grep -q "unexpected 'Ada': what the program receives goes after --"
+	@./examples/build run -h | grep -qF -e '-- <ARGS>...'
 	@./examples/build    2>&1 | grep -q '0 file(s) compiled'
 	@touch examples/demo/greet.h
 	@./examples/build    2>&1 | grep -q '0 file(s) compiled'
@@ -161,7 +164,7 @@ check-examples: $(EXAMPLE_BIN)
 	@./examples/build 2>&1 | grep -q '2 file(s) compiled'; rc=$$?; \
 	 cp build/greet.h.kept examples/demo/greet.h; rm -f build/greet.h.kept; \
 	 exit $$rc
-	@./examples/build --clean > /dev/null 2>&1
+	@./examples/build clean > /dev/null 2>&1
 	@./examples/peek --help > /dev/null
 	@./examples/peek examples/demo/app.conf | grep -q '|# The server the|'
 	@./examples/peek -n16 -o=16 examples/demo/prose.txt | grep -q '^00000010'

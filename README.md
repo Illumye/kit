@@ -42,7 +42,7 @@ new one.
 | Arena | `kit_arena`, `kit_scratch` | Bump allocation over chained regions, and per-thread scratch |
 | Timer | `kit_timer` | Monotonic timing |
 | Vectors | `kit_vec2`, `kit_vec3` | 2D and 3D vector maths |
-| Command line | `kit_cli` | Option parsing with grouped short flags, generated usage |
+| Command line | `kit_cli` | Options and commands in one table, what follows `--` kept apart, generated usage |
 | Buffers | `kit_buf` | Growable text buffer with `printf` formatting |
 | Processes | `kit_command`, `kit_process` | Run a child, wait for it, or capture either stream |
 | Map | `kit_map` | String keys, open addressing |
@@ -178,7 +178,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 204 tests over seventeen files, and the header compiles warning-free
+The suite is 214 tests over seventeen files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 
@@ -193,7 +193,7 @@ tests, which is where exhaustiveness belongs.
 
 | Example | What it does | What it leans on |
 |---|---|---|
-| `build.c` | Compiles `examples/demo`, rebuilding on content | filesystem, processes, glob, SHA-256 |
+| `build.c` | Compiles `examples/demo`, rebuilding on content, and runs it | commands, filesystem, processes, glob, SHA-256 |
 | `config.c` | Reads an INI file into a map | strings, map, arena, errors with context |
 | `journal.c` | Rotates a log file when it grows | filesystem writes, logger configuration, error codes |
 | `orbit.c` | Steps a few bodies around a centre | vectors, scalar maths, arena, timer |
@@ -204,6 +204,7 @@ tests, which is where exhaustiveness belongs.
 
 ```sh
 make examples
+./examples/build run -- Ada Alan
 ./examples/config examples/demo/app.conf --list
 ./examples/peek --sums -n 32 examples/demo/app.conf
 ./examples/wordfreq --top 5 --bench 100 examples/demo/prose.txt
