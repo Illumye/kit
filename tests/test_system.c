@@ -537,6 +537,13 @@ TEST(cli_parse_failures_carry_a_message_for_the_user) {
     { ARGV("-vz");
       CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
       CHECK(failed_with(&err, KIT_ERR_INVALID, "unknown option '-z' in '-vz'")); }
+
+    /* A group of one letter is not quoted back: it would only repeat itself. */
+    kit_error_clear(&err);
+    { ARGV("-z");
+      CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID, "unknown option '-z'"));
+      CHECK(strstr(err.message, " in ") == NULL); }
 }
 
 /* --- stopwatch ------------------------------------------------------------ */

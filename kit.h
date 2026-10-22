@@ -3524,6 +3524,10 @@ static bool kit__cli_parse_short_group(KitCliOpt *opts, size_t n_opts, const cha
         char  name  = *c++;
         KitCliOpt  *match = kit__cli_find_short(opts, n_opts, name);
         if (!match) {
+            /* The group is quoted back only when it holds more than the one
+             * letter: "unknown option '-z' in '-z'" says the same thing twice. */
+            if (arg[2] == '\0')
+                return kit_error_set(err, KIT_ERR_INVALID, "unknown option '-%c'", name);
             return kit_error_set(err, KIT_ERR_INVALID,
                                  "unknown option '-%c' in '%s'", name, arg);
         }
