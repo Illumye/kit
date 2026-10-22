@@ -74,6 +74,33 @@ jobs:
           cl /nologo /std:c++17 /W4 /WX /wd4200 /Fe:test_cxx.exe tests\test_cxx.cpp || exit /b 1
           test_cxx.exe || exit /b 1
 
+      # The completion script for PowerShell, run by both of them: Windows
+      # PowerShell 5.1 drops an empty argument on its way to a native program,
+      # which the script works around, and this is the one place it runs.
+      - name: completion in both PowerShells
+        shell: cmd
+        run: |
+          cl /nologo /std:c11 /W4 /WX /wd4200 /Fe:examples\build.exe examples\build.c || exit /b 1
+          python tests\check_completion.py powershell pwsh || exit /b 1
+
+  # The completion scripts, run by the shells the other jobs lack: zsh and
+  # fish are installed here, and PowerShell comes with the runner. bash and
+  # zsh are typed into through a pseudo-terminal, fish and PowerShell asked
+  # through their own completion commands.
+  completion:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: install the shells
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh fish
+
+      - name: check-completion
+        run: make check-completion
+
   # Big-endian and 64-bit ARM under emulation. s390x is the one that matters:
   # it caught the arena taking the width of max_align_t for its alignment,
   # which is 24 there and 16 on x86-64, where the mistake is invisible.
