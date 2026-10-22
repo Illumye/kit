@@ -1310,9 +1310,12 @@ typedef struct {
  * destinations as well.
  *
  * A malformed command line is KIT_ERR_INVALID, with a message meant to be
- * shown to whoever typed it: "unknown option '--verbse'", "unknown command
- * 'biuld'" or "missing <FILE>". Passing NULL logs it instead, which is what a
- * program that prints its usage and exits wants.
+ * shown to whoever typed it: "unknown option '--verbse', did you mean
+ * '--verbose'?", "unknown command 'biuld', did you mean 'build'?" or
+ * "missing <FILE>". A name is suggested when it is a typo or two away from
+ * the word, or when it is the only one that starts with it. Passing NULL logs
+ * the message instead, which is what a program that prints its usage and
+ * exits wants.
  */
 bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv,
                    KitError *err);
@@ -3919,6 +3922,115 @@ static bool kit__cli_parse_short_group(const Kit__CliScope *scope, const char *a
     return true;
 }
 
+/* How far apart two names are, in single-character edits: insertions,
+ * deletions, substitutions, and two neighbours swapped, the commonest typo of
+ * all. Optimal string alignment over three rows on the stack, so that a name
+ * longer than KIT__CLI_NAME_MAX is never compared: it is no typo of a name. */
+#define KIT__CLI_NAME_MAX 64
+
+static size_t kit__cli_distance(const char *a, size_t na, const char *b, size_t nb) {
+    if (na > KIT__CLI_NAME_MAX || nb > KIT__CLI_NAME_MAX) return SIZE_MAX;
+
+    size_t  rows[3][KIT__CLI_NAME_MAX + 1];
+    size_t *before = rows[0], *above = rows[1], *here = rows[2];
+    for (size_t j = 0; j <= nb; j++) above[j] = j;
+
+    for (size_t i = 1; i <= na; i++) {
+        here[0] = i;
+        for (size_t j = 1; j <= nb; j++) {
+            size_t cost = a[i - 1] == b[j - 1] ? 0 : 1;
+            size_t best = above[j] + 1;
+            if (here[j - 1] + 1 < best)       best = here[j - 1] + 1;
+            if (above[j - 1] + cost < best)   best = above[j - 1] + cost;
+            if (i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] &&
+                before[j - 2] + 1 < best)     best = before[j - 2] + 1;
+            here[j] = best;
+        }
+        size_t *spare = before;
+        before = above;
+        above  = here;
+        here   = spare;
+    }
+    return above[nb];
+}
+
+/* The name a mistyped word was most likely meant to be, gathered one known
+ * name at a time. */
+typedef struct {
+    const char *typed;
+    size_t      len;
+    const char *closest;
+    size_t      distance;
+    const char *extends;    /* a name that starts with what was typed */
+    size_t      extended;   /* how many do */
+} Kit__CliGuess;
+
+static void kit__cli_guess_init(Kit__CliGuess *guess, const char *typed, size_t len) {
+    guess->typed    = typed;
+    guess->len      = len;
+    guess->closest  = NULL;
+    guess->distance = SIZE_MAX;
+    guess->extends  = NULL;
+    guess->extended = 0;
+}
+
+static void kit__cli_guess_add(Kit__CliGuess *guess, const char *name) {
+    size_t n = strlen(name);
+    size_t d = kit__cli_distance(guess->typed, guess->len, name, n);
+    if (d < guess->distance) {
+        guess->distance = d;
+        guess->closest  = name;
+    }
+    if (guess->len > 0 && n > guess->len && strncmp(name, guess->typed, guess->len) == 0) {
+        guess->extends = name;
+        guess->extended++;
+    }
+}
+
+/* One or two edits away, one for a word of two letters and none for a single
+ * letter, which is a typo of everything; failing that, the one name the word
+ * is the start of. NULL when no name is a fair guess. */
+static const char *kit__cli_guess_result(const Kit__CliGuess *guess) {
+    size_t allowed = guess->len <= 2 ? 1 : 2;
+    if (guess->closest && guess->distance <= allowed && guess->distance < guess->len)
+        return guess->closest;
+    return guess->extended == 1 ? guess->extends : NULL;
+}
+
+/* Refuses a word that names no command here, with the closest one if any. */
+static bool kit__cli_unknown_command(const KitCliOpt *opts, size_t n_opts, const char *word,
+                                     KitError *err) {
+    Kit__CliGuess guess;
+    kit__cli_guess_init(&guess, word, strlen(word));
+    for (size_t i = 0; i < n_opts; i++)
+        if (opts[i].type == KIT_CLI_OPT_COMMAND && opts[i].long_name)
+            kit__cli_guess_add(&guess, opts[i].long_name);
+
+    const char *meant = kit__cli_guess_result(&guess);
+    if (meant)
+        return kit_error_set(err, KIT_ERR_INVALID, "unknown command '%s', did you mean '%s'?",
+                             word, meant);
+    return kit_error_set(err, KIT_ERR_INVALID, "unknown command '%s'", word);
+}
+
+/* Refuses a long option no table in force knows, with the closest name any of
+ * them has. key is the name as typed, without its dashes or its value. */
+static bool kit__cli_unknown_option(const Kit__CliScope *scope, const char *arg,
+                                    const char *key, size_t key_len, KitError *err) {
+    Kit__CliGuess guess;
+    kit__cli_guess_init(&guess, key, key_len);
+    for (size_t d = scope->depth; d-- > 0; )
+        for (size_t i = 0; i < scope->counts[d]; i++)
+            if (kit__cli_is_option(&scope->tables[d][i]) && scope->tables[d][i].long_name)
+                kit__cli_guess_add(&guess, scope->tables[d][i].long_name);
+
+    const char *meant = kit__cli_guess_result(&guess);
+    if (meant)
+        return kit_error_set(err, KIT_ERR_INVALID, "unknown option '%s', did you mean '--%s'?",
+                             arg, meant);
+    return kit_error_set(err, KIT_ERR_INVALID, "unknown option '%s'", arg);
+}
+
 /* A help flag in force is set: the line asks how to call the command, and
  * what it lacks for calling it is no error. */
 static bool kit__cli_help_given(const Kit__CliScope *scope) {
@@ -4031,8 +4143,7 @@ bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv,
             }
 
             const KitCliOpt *command = kit__cli_command_in(here, n_here, arg);
-            if (!command)
-                return kit_error_set(err, KIT_ERR_INVALID, "unknown command '%s'", arg);
+            if (!command) return kit__cli_unknown_command(here, n_here, arg, err);
             if (!kit__cli_scope_push(&scope, command)) {
                 return kit_error_set(err, KIT_ERR_RANGE,
                                      "'%s': commands cannot nest more than %d deep",
@@ -4053,9 +4164,7 @@ bool kit_cli_parse(KitCliOpt *opts, size_t n_opts, int *argc, char ***argv,
         size_t      key_len  = eq ? (size_t)(eq - key) : strlen(key);
 
         const KitCliOpt *match = kit__cli_find_long(&scope, key, key_len);
-        if (!match) {
-            return kit_error_set(err, KIT_ERR_INVALID, "unknown option '%s'", arg);
-        }
+        if (!match) return kit__cli_unknown_option(&scope, arg, key, key_len, err);
 
         if (kit__cli_is_switch(match)) {
             if (eq) {

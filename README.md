@@ -157,9 +157,11 @@ if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) { ... }
 
 `tool run --release server -- --port 8080` sets two bools, stores `server` in
 `target` and hands the last two words to `passed`. Without a target the line
-is refused, "missing <TARGET>", unless it asks for `--help`. The options of
-the enclosing table stay valid inside a command, and the usage follows the
-command the line named, its arguments listed with their help.
+is refused, "missing <TARGET>", unless it asks for `--help`, and a mistyped
+name comes back with the one it was likely meant to be: "unknown command
+'rnu', did you mean 'run'?". The options of the enclosing table stay valid
+inside a command, and the usage follows the command the line named, its
+arguments listed with their help.
 
 The same tables answer the shell's TAB. `kit_cli_completion_script` prints
 the few lines that connect a shell to the program, and a person installs them
@@ -224,7 +226,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 226 tests over seventeen files, and the header compiles warning-free
+The suite is 227 tests over seventeen files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 

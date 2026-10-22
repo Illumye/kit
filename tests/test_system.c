@@ -600,6 +600,45 @@ TEST(cli_choice_takes_one_value_out_of_its_list) {
     free(text);
 }
 
+/* --- suggestions ---------------------------------------------------------- */
+
+TEST(cli_unknown_names_come_with_a_guess) {
+    bool verbose = false, build = false, run = false, clean = false, completion = false;
+    int  color   = 0;
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG        ('v', "verbose", "verbose", &verbose),
+        KIT_CLI_CHOICE      (0,   "color", "auto|always|never", "color", &color),
+        KIT_CLI_COMMAND_BARE("build",      "build",      &build),
+        KIT_CLI_COMMAND_BARE("run",        "run",        &run),
+        KIT_CLI_COMMAND_BARE("clean",      "clean",      &clean),
+        KIT_CLI_COMMAND_BARE("completion", "completion", &completion),
+    };
+
+    struct { const char *word, *message; } cases[] = {
+        /* two letters swapped, one left out, one wrong */
+        { "biuld",  "unknown command 'biuld', did you mean 'build'?" },
+        { "rn",     "unknown command 'rn', did you mean 'run'?" },
+        { "cleen",  "unknown command 'cleen', did you mean 'clean'?" },
+        /* the start of exactly one name */
+        { "comp",   "unknown command 'comp', did you mean 'completion'?" },
+        /* nothing close, a single letter, the start of two names: no guess
+         * rather than a wrong one */
+        { "deploy", "unknown command 'deploy'" },
+        { "x",      "unknown command 'x'" },
+        { "c",      "unknown command 'c'" },
+        /* options too, the value left out of the guess */
+        { "--verbse",      "unknown option '--verbse', did you mean '--verbose'?" },
+        { "--colr=always", "unknown option '--colr=always', did you mean '--color'?" },
+        { "--zzz",         "unknown option '--zzz'" },
+    };
+    for (size_t i = 0; i < KIT_COUNTOF(cases); i++) {
+        KitError err = KIT_ZEROED;
+        ARGV(cases[i].word);
+        CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+        CHECK_STR(err.message, cases[i].message);
+    }
+}
+
 /* --- commands ------------------------------------------------------------- */
 
 /* The table is data a program can read back, so what each macro writes into
@@ -1485,6 +1524,7 @@ int main(int argc, char **argv) {
 #endif
     RUN(cli_parse_failures_carry_a_message_for_the_user);
     RUN(cli_choice_takes_one_value_out_of_its_list);
+    RUN(cli_unknown_names_come_with_a_guess);
     RUN(cli_command_tables_say_what_their_entries_are);
     RUN(cli_commands_choose_the_table_that_reads_the_rest);
     RUN(cli_commands_nest_and_the_innermost_name_wins);

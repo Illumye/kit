@@ -158,6 +158,7 @@ check-examples: $(EXAMPLE_BIN)
 	@./examples/build __complete run -- '' | grep -q '^:files$$'
 	@./examples/build __complete completion '' | grep -q '^powershell$$'
 	@./examples/build completion tcsh 2>&1 | grep -q 'expected one of bash, zsh, fish, powershell'
+	@./examples/build rnu 2>&1 | grep -q "unknown command 'rnu', did you mean 'run'?"
 	@./examples/build    2>&1 | grep -q '0 file(s) compiled'
 	@./examples/build --color=always 2>&1 | grep -q "$$(printf '\033')"
 	@! ./examples/build --color=never 2>&1 | grep -q "$$(printf '\033')"
