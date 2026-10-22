@@ -179,6 +179,18 @@ their help beside them, the values of a choice, whether it is an option or an
 argument, and file names where a file belongs. `tool __complete run --r`
 prints what TAB would offer.
 
+What no table can know, the keys of a file or the branches of a repository,
+comes from a function of the program's, attached to the variable it fills.
+It runs on TAB with the words before the cursor already stored, so it reads
+them where the program would:
+
+```c
+KitCliCompleter completers[] = {
+    KIT_CLI_COMPLETER(&key, offer_keys, &path),   /* the keys of the file in path */
+};
+if (kit_cli_complete_with_arr(stdout, opts, completers, argc, argv)) return 0;
+```
+
 ## A taste of it
 
 ```c
@@ -226,7 +238,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 227 tests over seventeen files, and the header compiles warning-free
+The suite is 229 tests over seventeen files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 
@@ -242,7 +254,7 @@ tests, which is where exhaustiveness belongs.
 | Example | What it does | What it leans on |
 |---|---|---|
 | `build.c` | Compiles `examples/demo`, rebuilding on content, and runs it | commands and completion, filesystem, processes, glob, SHA-256 |
-| `config.c` | Reads an INI file into a map | strings, map, arena, errors with context |
+| `config.c` | Reads an INI file into a map, and completes its keys | strings, map, arena, errors with context, completers |
 | `journal.c` | Rotates a log file when it grows | filesystem writes, logger configuration, error codes |
 | `orbit.c` | Steps a few bodies around a centre | vectors, scalar maths, arena, timer |
 | `runner.c` | Reports on other programs and runs them | commands, processes, captured output, ring buffer |
@@ -254,6 +266,7 @@ tests, which is where exhaustiveness belongs.
 make examples
 ./examples/build run -- Ada Alan
 ./examples/config examples/demo/app.conf --list
+./examples/config examples/demo/app.conf server.port
 ./examples/peek --sums -n 32 examples/demo/app.conf
 ./examples/wordfreq --top 5 --bench 100 examples/demo/prose.txt
 ./examples/tree --match '*.c' --largest 5 examples

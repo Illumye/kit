@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Drives each shell through the completion script examples/build prints, the
+Drives each shell through the completion scripts the examples print, the
 way a person would: type a few characters, press TAB, read what the line
 became. The unit suite checks what the program answers; this checks that the
 four scripts carry the answer to the line intact, which only a real shell
@@ -29,8 +29,18 @@ import time
 ROOT     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXAMPLES = os.path.join(ROOT, "examples")
 WINDOWS  = os.name == "nt"
-PROGRAM  = os.path.join(EXAMPLES, "build.exe" if WINDOWS else "build")
 TIMEOUT  = 10
+
+# Each program, and how it prints its script for a shell: build has a
+# completion command, config an option, since it has no commands.
+PROGRAMS = {
+    "build":  lambda shell: ["completion", shell],
+    "config": lambda shell: ["--completion=" + shell],
+}
+
+
+def program_path(name):
+    return os.path.join(EXAMPLES, name + (".exe" if WINDOWS else ""))
 
 # What one TAB turns a line into, where the answer is unique.
 INSERTIONS = [
@@ -41,6 +51,7 @@ INSERTIONS = [
     ("build com",                      "build completion"),
     ("build -v run --verb",            "build -v run --verbose"),
     ("build completion z",             "build completion zsh"),
+    ("config examples/demo/app.conf server.p", "config examples/demo/app.conf server.port"),
 ]
 
 # The same, where the shell's own file completion takes over. Only a line
@@ -56,6 +67,8 @@ OFFERS = [
     ("build --color=",                 ["auto", "always", "never"]),
     ("build -",                        ["--verbose", "--color", "--help"]),
     ("build completion ",              ["bash", "zsh", "fish", "powershell"]),
+    ("config examples/demo/app.conf limits.",
+     ["limits.max_connections", "limits.rate_per_second"]),
 ]
 
 
@@ -119,13 +132,25 @@ class Terminal:
         os.waitpid(self.pid, 0)
 
 
+def loading(shell):
+    """The lines that load every program's script, in the shell's syntax."""
+    for name, arguments in PROGRAMS.items():
+        command = " ".join([name] + arguments(shell))
+        if shell in ("bash", "zsh"):
+            yield f'eval "$({command})"'
+        elif shell == "fish":
+            yield f"{command} | source"
+        else:
+            yield f"& {command} | Out-String | Invoke-Expression"
+
+
 def interactive(shell, env, home):
     if shell == "bash":
         return Terminal(["bash", "--norc", "--noprofile", "-i"], env,
-                        'eval "$(build completion bash)"')
+                        "; ".join(loading("bash")))
     return Terminal(["zsh", "-f", "-i"], env,
-                    "bindkey -e; autoload -Uz compinit; "
-                    f"compinit -u -d {home}/zcompdump; eval \"$(build completion zsh)\"")
+                    f"bindkey -e; autoload -Uz compinit; compinit -u -d {home}/zcompdump; "
+                    + "; ".join(loading("zsh")))
 
 
 def check_interactive(shell, env, home):
@@ -145,7 +170,7 @@ def check_interactive(shell, env, home):
 
 def candidates_fish(env):
     lines = "\n".join(typed for typed, _ in INSERTIONS + FILES + OFFERS)
-    script = ("build completion fish | source\n"
+    script = ("\n".join(loading("fish")) + "\n"
               "for line in (string split \\n -- $KIT_LINES)\n"
               "    printf 'LINE\\t%s\\n' $line\n"
               "    complete -C $line\n"
@@ -158,13 +183,13 @@ def candidates_fish(env):
 
 def candidates_powershell(executable, env):
     lines = "\n".join(typed for typed, _ in INSERTIONS + FILES + OFFERS)
-    script = ("& $env:KIT_PROGRAM completion powershell | Out-String | Invoke-Expression\n"
+    script = ("\n".join(loading("powershell")) + "\n"
               "foreach ($line in ($env:KIT_LINES -split \"`n\")) {\n"
               "    \"LINE`t$line\"\n"
               "    $r = TabExpansion2 -inputScript $line -cursorColumn $line.Length\n"
               "    foreach ($m in $r.CompletionMatches) { $m.CompletionText }\n"
               "}\n")
-    env = dict(env, KIT_LINES=lines, KIT_PROGRAM=PROGRAM)
+    env = dict(env, KIT_LINES=lines)
     # Encoded, because a script of several lines does not survive the trip
     # through a Windows command line as a plain argument.
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
@@ -210,9 +235,10 @@ def check_candidates(found):
 
 def main():
     wanted = sys.argv[1:] or ["bash", "zsh", "fish", "powershell", "pwsh"]
-    if not os.path.exists(PROGRAM):
-        print(f"completion: {PROGRAM} is not built")
-        return 1
+    for name in PROGRAMS:
+        if not os.path.exists(program_path(name)):
+            print(f"completion: {program_path(name)} is not built")
+            return 1
 
     status = 0
     with tempfile.TemporaryDirectory() as home:

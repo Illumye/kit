@@ -182,6 +182,9 @@ check-examples: $(EXAMPLE_BIN)
 	@./examples/peek -n 0 examples/demo/prose-utf8.txt | grep -q '549 characters, valid UTF-8'
 	@./examples/config examples/demo/app.conf | grep -q '^port        8080'
 	@./examples/config examples/demo/app.conf --list | grep -q 'paths.log'
+	@./examples/config examples/demo/app.conf server.port | grep -q '^8080$$'
+	@./examples/config __complete examples/demo/app.conf server.p | grep -q "^server.port$$(printf '\t')8080$$"
+	@./examples/config --completion=zsh | grep -q '^compdef'
 	@./examples/config examples/demo/broken.conf 2>&1 | grep -q 'expected a whole number'
 	@./examples/wordfreq --top 3 examples/demo/prose.txt | grep -q '^     3  errors$$'
 	@./examples/wordfreq --top 3 examples/demo/prose.txt | grep -q '28 distinct, 28 common ones skipped'
@@ -207,7 +210,7 @@ check-examples: $(EXAMPLE_BIN)
 # an interactive bash and zsh, asked of fish and PowerShell. A shell that is
 # not installed is skipped and named, so a green run says what it covered.
 
-check-completion: examples/build
+check-completion: examples/build examples/config
 	@command -v python3 > /dev/null || { echo "check-completion: python3 not found, skipped"; exit 0; }; \
 	 python3 tests/check_completion.py
 

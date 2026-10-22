@@ -77,6 +77,12 @@ static void check(KitCliOpt *opts, size_t n_opts, char *const *storage, int coun
     if (sink) { kit_cli_usage(sink, "fuzz", opts, n_opts); fclose(sink); }
 }
 
+/* A completer that offers what it is given and asks for files besides. */
+static void offer_nothing(KitCliAnswer *answer, const char *typed, void *context) {
+    kit_cli_offer(answer, typed, NULL);
+    kit_cli_offer_files(answer, typed, context);
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (size > 4096) return 0;
     FuzzInput in = fuzz_input(data, size);
@@ -162,6 +168,30 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     check(positional, KIT_COUNTOF(positional), storage, count, &str_o, NULL, &middle);
     if (first) assert(from_input(first, storage, count));
     if (last)  assert(from_input(last, storage, count));
+
+    /* The same words as a completion request, which stores what they say and
+     * gathers the positional ones at the front of argv while it reads. Every
+     * table above is asked, one with a completer, and a pointer it leaves in
+     * a destination still points at an input. */
+    char  word[] = "__complete";
+    char *request[MAX_ARGS + 2];
+    request[0] = word;
+    FILE *sink = fopen("/dev/null", "w");
+    if (sink) {
+        KitCliCompleter completers[] = { KIT_CLI_COMPLETER(&first, offer_nothing, NULL) };
+        for (int round = 0; round < 3; round++) {
+            for (int i = 0; i < count; i++) request[i + 1] = storage[i];
+            request[count + 1] = NULL;
+            first = last = NULL;
+            str_o = "default";
+            if (round == 0) kit_cli_complete_arr(sink, flat, count + 1, request);
+            if (round == 1) kit_cli_complete_arr(sink, commands, count + 1, request);
+            if (round == 2) kit_cli_complete_with_arr(sink, positional, completers, count + 1, request);
+            if (first) assert(from_input(first, storage, count));
+            if (strcmp(str_o, "default") != 0) assert(from_input(str_o, storage, count));
+        }
+        fclose(sink);
+    }
 
     for (int i = 0; i < count; i++) free(storage[i]);
     return 0;

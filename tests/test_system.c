@@ -990,13 +990,17 @@ TEST(cli_usage_follows_the_command_the_parse_chose) {
 
 /* --- shell completion ----------------------------------------------------- */
 
-/* What kit_cli_complete answers to a request, as a heap string, or NULL when
- * it declined the line, which it must do without writing anything. */
-static char *answer(const KitCliOpt *opts, size_t n_opts, int argc, char **argv) {
+/* What kit_cli_complete_with answers to a request, as a heap string, or NULL
+ * when it declined the line, which it must do without writing anything. */
+static char *answer_with(const KitCliOpt *opts, size_t n_opts,
+                         const KitCliCompleter *completers, size_t n_completers,
+                         int argc, char **argv) {
     const char *path = "utest-tmp-complete.txt";
     FILE       *fp   = fopen(path, "wb");
     if (!fp) return NULL;
-    bool handled = kit_cli_complete(fp, opts, n_opts, argc, argv);
+    bool handled = completers
+        ? kit_cli_complete_with(fp, opts, n_opts, completers, n_completers, argc, argv)
+        : kit_cli_complete(fp, opts, n_opts, argc, argv);
     fclose(fp);
     char *text = kit_fs_read(path, NULL);
     remove(path);
@@ -1008,11 +1012,25 @@ static char *answer(const KitCliOpt *opts, size_t n_opts, int argc, char **argv)
     return text;
 }
 
+static char *answer(const KitCliOpt *opts, size_t n_opts, int argc, char **argv) {
+    return answer_with(opts, n_opts, NULL, 0, argc, argv);
+}
+
 /* The request on the left, the exact answer on the right. */
 #define CHECK_ANSWER(expected, ...)                                     \
     do {                                                                \
         ARGV("__complete", __VA_ARGS__);                                \
         char *got = answer(opts, KIT_COUNTOF(opts), argc, argv);        \
+        CHECK_STR(got, expected);                                       \
+        free(got);                                                      \
+    } while (0)
+
+/* The same, with the completers in scope. */
+#define CHECK_COMPLETED(expected, ...)                                  \
+    do {                                                                \
+        ARGV("__complete", __VA_ARGS__);                                \
+        char *got = answer_with(opts, KIT_COUNTOF(opts), completers,    \
+                                KIT_COUNTOF(completers), argc, argv);   \
         CHECK_STR(got, expected);                                       \
         free(got);                                                      \
     } while (0)
@@ -1100,6 +1118,91 @@ TEST(cli_complete_keeps_each_description_to_one_line) {
         KIT_CLI_FLAG(0, "odd", "First line\nsecond line", &odd),
     };
     CHECK_ANSWER("--odd\tFirst line\n:none\n", "--");
+}
+
+/* --- completers ----------------------------------------------------------- */
+
+/* What the line had stored where a completer looks, when it last ran. */
+static const char *completer_saw;
+
+static void offer_profiles(KitCliAnswer *answer, const char *typed, void *context) {
+    KIT_UNUSED(typed);
+    completer_saw = *(const char **)context;
+    kit_cli_offer(answer, "staging", "the test servers");
+    kit_cli_offer(answer, "production", NULL);
+    kit_cli_offer(answer, "two\tcolumns", NULL);     /* left out: the tab would cut it */
+    kit_cli_offer(answer, "", NULL);                 /* left out: nothing to insert */
+}
+
+static void offer_stdin_and_files(KitCliAnswer *answer, const char *typed, void *context) {
+    kit_cli_offer(answer, "-", "standard input");
+    kit_cli_offer_files(answer, typed, context);
+}
+
+TEST(cli_completers_offer_what_no_table_can_know) {
+    bool        verbose = false;
+    int         level   = 0;
+    const char *profile = NULL, *file = NULL, *input = NULL;
+    KitCliOpt opts[] = {
+        KIT_CLI_FLAG        ('v', "verbose", "verbose", &verbose),
+        KIT_CLI_INT         ('l', "level", "N", "level", &level),
+        KIT_CLI_STR         ('p', "profile", "NAME", "Which profile", &profile),
+        KIT_CLI_ARG         ("FILE", "The file", &file),
+        KIT_CLI_ARG_OPTIONAL("INPUT", "Where to read", &input),
+    };
+    KitCliCompleter completers[] = {
+        KIT_CLI_COMPLETER(&profile, offer_profiles, &file),
+        KIT_CLI_COMPLETER(&input, offer_stdin_and_files, NULL),
+    };
+
+    /* Narrowed by what is typed, after a space, after "=" and after the
+     * letter: the shell replaces the whole word, so the head comes back. */
+    CHECK_COMPLETED("staging\tthe test servers\nproduction\n:none\n", "--profile", "");
+    CHECK_COMPLETED("production\n:none\n", "--profile", "pro");
+    CHECK_COMPLETED("--profile=staging\tthe test servers\n:none\n", "--profile=st");
+    CHECK_COMPLETED("-pstaging\tthe test servers\n:none\n", "-pst");
+
+    /* A completer may hand the shell its file names on top of its own. */
+    CHECK_COMPLETED("-\tstandard input\n:files\n", "a.txt", "");
+
+    /* An entry no completer is for keeps what its type offers. */
+    CHECK_COMPLETED(":files\n", "");
+    CHECK_COMPLETED(":none\n", "--level", "");
+
+    /* What the line says before the cursor is stored first, so the completer
+     * reads it where the program would; a value that does not parse is left
+     * alone, without a word. */
+    completer_saw = NULL;
+    CHECK_COMPLETED("staging\tthe test servers\n:none\n",
+                    "-v", "--level", "3", "a.txt", "--level=x", "-p", "s");
+    CHECK_STR(completer_saw, "a.txt");
+    CHECK(verbose);
+    CHECK_INT(level, 3);
+}
+
+TEST(cli_completion_stores_commands_and_the_rest_too) {
+    bool        build = false;
+    const char *file  = "unset";
+    KitCliArgs  passed = KIT_ZEROED;
+
+    KitCliOpt build_opts[] = { KIT_CLI_REST("ARGS", "args", &passed) };
+    KitCliOpt opts[] = { KIT_CLI_COMMAND("build", "build", build_opts, &build) };
+    KitCliCompleter completers[] = {
+        KIT_CLI_COMPLETER(&passed, offer_profiles, &file),
+    };
+
+    /* The rest has a completer of its own, and what precedes the cursor in it
+     * is already a list. The list points into the request's argv, so it is
+     * read while that argv still exists. */
+    {   ARGV("__complete", "build", "--", "x", "p");
+        char *got = answer_with(opts, KIT_COUNTOF(opts), completers, KIT_COUNTOF(completers),
+                                argc, argv);
+        CHECK_STR(got, "production\n:none\n");
+        free(got);
+        CHECK(build);
+        if (CHECK_INT(passed.count, 1)) CHECK_STR(passed.items[0], "x");
+    }
+    CHECK_STR(completer_saw, "unset");
 }
 
 /* The script for one shell and one program name, as a heap string, or NULL
@@ -1544,6 +1647,8 @@ int main(int argc, char **argv) {
     RUN(cli_help_waives_what_the_line_lacks);
     RUN(cli_usage_names_the_positional_arguments);
     RUN(cli_complete_offers_what_each_argument_expects);
+    RUN(cli_completers_offer_what_no_table_can_know);
+    RUN(cli_completion_stores_commands_and_the_rest_too);
     RUN(timer_measures_forward);
     RUN(scalar_helpers);
     RUN(vector_helpers);

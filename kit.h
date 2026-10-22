@@ -1362,12 +1362,65 @@ void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t 
  * -------------------------------------------------------------------------- */
 
 /* Answers a completion request on fp and returns true, or returns false at
- * once when the line is not one. The words are read against the tables but
- * never parsed into them: no destination is written. */
+ * once when the line is not one. What the words before the cursor say is
+ * stored in the destinations, as the parser would store it but without a
+ * word of complaint about a line that is still being typed: that is where a
+ * completer reads it. Nothing else is written. */
 bool kit_cli_complete(FILE *fp, const KitCliOpt *opts, size_t n_opts, int argc, char **argv);
 
 #define kit_cli_complete_arr(fp, opts, argc, argv) \
     kit_cli_complete((fp), (opts), KIT_COUNTOF(opts), (argc), (argv))
+
+/* An answer to a completion request, being written. A completer adds to it
+ * through kit_cli_offer and kit_cli_offer_files, and never looks inside. */
+typedef struct KitCliAnswer KitCliAnswer;
+
+/* Values no table can know, offered by a function of the program: the keys
+ * of a configuration file, the branches of a repository. A completer is
+ * matched to its entry by destination, the variable the value would land in,
+ * so the table stays as it is and one completer serves an option and an
+ * argument alike:
+ *
+ *   static void offer_keys(KitCliAnswer *answer, const char *typed, void *context) {
+ *       const char *path = *(const char **)context;
+ *       ...for each key read from path: kit_cli_offer(answer, key, value);
+ *   }
+ *
+ *   KitCliCompleter completers[] = {
+ *       KIT_CLI_COMPLETER(&key, offer_keys, &path),
+ *   };
+ *   if (kit_cli_complete_with_arr(stdout, opts, completers, argc, argv)) return 0;
+ *
+ * It runs only to answer a request, once the words before the cursor are
+ * stored: path holds the file the line named, which is how offer_keys knows
+ * where to look. It must do nothing but answer, and answer quickly, since a
+ * person is waiting on every TAB. typed is what the word holds so far, and
+ * context is handed over as it was given. */
+typedef struct {
+    const void *dst;
+    void      (*offer)(KitCliAnswer *answer, const char *typed, void *context);
+    void       *context;
+} KitCliCompleter;
+
+#define KIT_CLI_COMPLETER(dst, offer, context) { (dst), (offer), (context) }
+
+/* kit_cli_complete, with completers for the values the tables cannot offer. */
+bool kit_cli_complete_with(FILE *fp, const KitCliOpt *opts, size_t n_opts,
+                           const KitCliCompleter *completers, size_t n_completers,
+                           int argc, char **argv);
+
+#define kit_cli_complete_with_arr(fp, opts, completers, argc, argv)               \
+    kit_cli_complete_with((fp), (opts), KIT_COUNTOF(opts),                        \
+                          (completers), KIT_COUNTOF(completers), (argc), (argv))
+
+/* Offers one candidate, with its description or NULL. A candidate that does
+ * not start with what is typed is left out, so a completer may offer all it
+ * has; so is one holding a tab or a newline, which the shell would cut. */
+void kit_cli_offer(KitCliAnswer *answer, const char *value, const char *help);
+
+/* Asks the shell to offer file names there too. It has the shape of a
+ * completer, so it can also stand in a KitCliCompleter as it is. */
+void kit_cli_offer_files(KitCliAnswer *answer, const char *typed, void *context);
 
 /* The shells kit_cli_completion_script writes for. KIT_CLI_SHELLS names them
  * in the same order, as the list of a choice, so the position a parse stores
@@ -4367,6 +4420,26 @@ void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t 
 /* The word a shell sends first to ask for candidates rather than for work. */
 #define KIT__CLI_REQUEST "__complete"
 
+/* An answer being written: where it goes, what the word holds before the
+ * value being completed, which every candidate repeats since the shell
+ * replaces the whole word, the value typed so far, and the line telling the
+ * shell what it should add. */
+struct KitCliAnswer {
+    FILE       *fp;
+    const char *head;
+    int         head_len;
+    const char *typed;
+    const char *directive;
+};
+
+/* The request being answered: where the answer goes, and the program's
+ * completers. */
+typedef struct {
+    FILE                  *fp;
+    const KitCliCompleter *completers;
+    size_t                 n_completers;
+} Kit__CliRequest;
+
 static bool kit__cli_takes_value(const KitCliOpt *o) {
     return o->type == KIT_CLI_OPT_STR || o->type == KIT_CLI_OPT_INT ||
            o->type == KIT_CLI_OPT_CHOICE;
@@ -4382,6 +4455,20 @@ static void kit__cli_offer(FILE *fp, const char *head, const char *word, const c
     fprintf(fp, "%s%s", head, word);
     if (help && *help) fprintf(fp, "\t%.*s", (int)strcspn(help, "\n"), help);
     fputc('\n', fp);
+}
+
+void kit_cli_offer(KitCliAnswer *answer, const char *value, const char *help) {
+    /* A tab or a newline inside a value would cut it in two for the shell. */
+    if (!value || !*value || strpbrk(value, "\t\n") || !kit__cli_starts_with(value, answer->typed))
+        return;
+    fprintf(answer->fp, "%.*s", answer->head_len, answer->head);
+    kit__cli_offer(answer->fp, "", value, help);
+}
+
+void kit_cli_offer_files(KitCliAnswer *answer, const char *typed, void *context) {
+    KIT_UNUSED(typed);
+    KIT_UNUSED(context);
+    answer->directive = ":files";
 }
 
 /* Every option in force whose name starts with what is typed, innermost table
@@ -4418,43 +4505,86 @@ static void kit__cli_offer_commands(FILE *fp, const KitCliOpt *opts, size_t n_op
             kit__cli_offer(fp, "", opts[i].long_name, opts[i].help);
 }
 
-/* What can stand as the value of an option. `head` is what the word holds
- * before the value, "--color=" or "-c", which every candidate repeats since
- * the shell replaces the whole word. Returns the line for the shell. */
-static const char *kit__cli_offer_value(FILE *fp, const KitCliOpt *o, const char *head,
-                                        int head_len, const char *typed) {
-    if (o->type == KIT_CLI_OPT_STR) return ":files";
+/* What can stand as the value of an entry: what the program's completer for
+ * its destination offers, or else what its type says. `head` is what the word
+ * holds before the value, "--color=" or "-c". Returns the line for the shell. */
+static const char *kit__cli_offer_value(const Kit__CliRequest *request, const KitCliOpt *o,
+                                        const char *head, int head_len, const char *typed) {
+    for (size_t i = 0; i < request->n_completers; i++) {
+        const KitCliCompleter *c = &request->completers[i];
+        if (!c->offer || c->dst != o->dst) continue;
+        KitCliAnswer answer = { request->fp, head, head_len, typed, ":none" };
+        c->offer(&answer, typed, c->context);
+        return answer.directive;
+    }
+
+    if (o->type == KIT_CLI_OPT_STR || o->type == KIT_CLI_OPT_REST) return ":files";
     if (o->type != KIT_CLI_OPT_CHOICE) return ":none";
 
     KitStr choices = kit_str_from(o->meta ? o->meta : ""), choice;
     while (kit_str_next(&choices, '|', &choice))
         if (choice.count > 0 && kit_str_starts_with_cstr(choice, typed))
-            fprintf(fp, "%.*s" KIT_STR_FMT "\n", head_len, head, KIT_STR_ARG(choice));
+            fprintf(request->fp, "%.*s" KIT_STR_FMT "\n", head_len, head, KIT_STR_ARG(choice));
     return ":none";
 }
 
-/* The option a word leaves waiting for its value in the next word, if any:
- * --name without "=", or a group whose last letter takes a value. */
-static const KitCliOpt *kit__cli_waiting(const Kit__CliScope *scope, const char *word) {
+/* Stores what an option word says, as the parser would but without a word of
+ * complaint, and returns the option it leaves waiting for its value in the
+ * next word, if any: --name without "=", or a group whose last letter takes
+ * a value. */
+static const KitCliOpt *kit__cli_note_option(const Kit__CliScope *scope, const char *word) {
+    KitError quiet = KIT_ZEROED;
     if (word[1] == '-') {
-        if (strchr(word, '=')) return NULL;
-        const KitCliOpt *o = kit__cli_find_long(scope, word + 2, strlen(word + 2));
-        return o && kit__cli_takes_value(o) ? o : NULL;
+        const char      *eq  = strchr(word, '=');
+        size_t           len = eq ? (size_t)(eq - word - 2) : strlen(word + 2);
+        const KitCliOpt *o   = kit__cli_find_long(scope, word + 2, len);
+        if (!o) return NULL;
+        if (kit__cli_is_switch(o)) {
+            if (!eq) *(bool *)o->dst = true;
+            return NULL;
+        }
+        if (!eq) return o;
+        kit__cli_store(o, o->dst, eq + 1, word, &quiet);
+        return NULL;
     }
     for (const char *c = word + 1; *c; c++) {
         const KitCliOpt *o = kit__cli_find_short(scope, *c);
         if (!o) return NULL;
-        if (kit__cli_takes_value(o)) return c[1] == '\0' ? o : NULL;
+        if (kit__cli_is_switch(o)) {
+            *(bool *)o->dst = true;
+            continue;
+        }
+        if (c[1] == '\0') return o;
+        kit__cli_store(o, o->dst, c[1] == '=' ? c + 2 : c + 1, word, &quiet);
+        return NULL;
     }
     return NULL;
 }
 
+/* Stores the positional words given so far, the way a line cut at the cursor
+ * reads: one word to each single entry in order, a list taking the rest. */
+static void kit__cli_store_given(const KitCliOpt *opts, size_t n_opts, char **words, int given) {
+    KitError quiet = KIT_ZEROED;
+    int      at    = 0;
+    for (size_t i = 0; i < n_opts && at < given; i++) {
+        const KitCliOpt *o = &opts[i];
+        if (!kit__cli_is_positional(o)) continue;
+        if (kit__cli_takes_many(o)) {
+            KitCliArgs *list = (KitCliArgs *)o->dst;
+            list->items = words + at;
+            list->count = (size_t)(given - at);
+            return;
+        }
+        kit__cli_store(o, o->dst, words[at++], NULL, &quiet);
+    }
+}
+
 /* The word under the cursor starts with a dash: the name of an option, or a
  * value already attached to one. */
-static const char *kit__cli_complete_dash(FILE *fp, const Kit__CliScope *scope,
-                                          const char *typed) {
+static const char *kit__cli_complete_dash(const Kit__CliRequest *request,
+                                          const Kit__CliScope *scope, const char *typed) {
     if (typed[1] == '\0' || (typed[1] == '-' && !strchr(typed, '='))) {
-        kit__cli_offer_options(fp, scope, typed);
+        kit__cli_offer_options(request->fp, scope, typed);
         return ":none";
     }
 
@@ -4462,7 +4592,7 @@ static const char *kit__cli_complete_dash(FILE *fp, const Kit__CliScope *scope,
         const char      *eq = strchr(typed, '=');
         const KitCliOpt *o  = kit__cli_find_long(scope, typed + 2, (size_t)(eq - typed - 2));
         if (!o || !kit__cli_takes_value(o)) return ":none";
-        return kit__cli_offer_value(fp, o, typed, (int)(eq + 1 - typed), eq + 1);
+        return kit__cli_offer_value(request, o, typed, (int)(eq + 1 - typed), eq + 1);
     }
 
     /* A group: the value starts after the first letter that takes one. */
@@ -4472,7 +4602,7 @@ static const char *kit__cli_complete_dash(FILE *fp, const Kit__CliScope *scope,
         if (!kit__cli_takes_value(o)) continue;
         if (c[1] == '\0') break;            /* the value is the next word */
         const char *value = c[1] == '=' ? c + 2 : c + 1;
-        return kit__cli_offer_value(fp, o, typed, (int)(value - typed), value);
+        return kit__cli_offer_value(request, o, typed, (int)(value - typed), value);
     }
     return ":none";
 }
@@ -4480,7 +4610,8 @@ static const char *kit__cli_complete_dash(FILE *fp, const Kit__CliScope *scope,
 /* What the next positional argument of a table may be. The words already
  * given go to the declared entries in order, a list keeping every one after
  * it. With none declared any word goes, and a file name is the best guess. */
-static const char *kit__cli_offer_positional(FILE *fp, const KitCliOpt *opts, size_t n_opts,
+static const char *kit__cli_offer_positional(const Kit__CliRequest *request,
+                                             const KitCliOpt *opts, size_t n_opts,
                                              int given, const char *typed) {
     bool declared = false;
     for (size_t i = 0; i < n_opts; i++) {
@@ -4491,12 +4622,14 @@ static const char *kit__cli_offer_positional(FILE *fp, const KitCliOpt *opts, si
             given--;
             continue;
         }
-        return kit__cli_offer_value(fp, o, "", 0, typed);
+        return kit__cli_offer_value(request, o, "", 0, typed);
     }
     return declared ? ":none" : ":files";
 }
 
-bool kit_cli_complete(FILE *fp, const KitCliOpt *opts, size_t n_opts, int argc, char **argv) {
+bool kit_cli_complete_with(FILE *fp, const KitCliOpt *opts, size_t n_opts,
+                           const KitCliCompleter *completers, size_t n_completers,
+                           int argc, char **argv) {
     if (argc < 1 || strcmp(argv[0], KIT__CLI_REQUEST) != 0) return false;
 
     /* The last word is the one under the cursor, and no word at all is an
@@ -4504,53 +4637,76 @@ bool kit_cli_complete(FILE *fp, const KitCliOpt *opts, size_t n_opts, int argc, 
     int         n_before = argc > 1 ? argc - 2 : 0;
     const char *typed    = argc > 1 ? argv[argc - 1] : "";
 
-    /* The words before it are walked the way the parser walks them, minus
-     * every assignment and every error: a line still being typed is wrong
-     * often, and what it already says is still worth reading. */
+    /* The words before it are walked the way the parser walks them, and what
+     * they say is stored the way it stores it, minus every complaint: a line
+     * still being typed is wrong often, what it already says is worth
+     * reading, and a completer reads it where the program would. The
+     * positional words are gathered at the front of argv, as the parser
+     * gathers them. */
+    Kit__CliRequest  request = { fp, completers, n_completers };
     Kit__CliScope    scope;
     const KitCliOpt *waiting = NULL;
-    bool             rest    = false;   /* past "--", into a KIT_CLI_REST    */
+    const KitCliOpt *rest    = NULL;    /* past "--", into a KIT_CLI_REST    */
     bool             literal = false;   /* past "--" with none: all arguments */
-    int              given   = 0;       /* positional arguments of the innermost command */
+    char           **words   = argv + 1;
+    int              given   = 0;       /* positional words of the innermost command */
+    KitError         quiet   = KIT_ZEROED;
     kit__cli_scope_init(&scope, opts, n_opts);
 
     for (int i = 1; i <= n_before && !rest; i++) {
-        const char      *word   = argv[i];
+        char            *word   = argv[i];
         const KitCliOpt *here   = scope.tables[scope.depth - 1];
         size_t           n_here = scope.counts[scope.depth - 1];
         if (waiting) {
+            kit__cli_store(waiting, waiting->dst, word, word, &quiet);
             waiting = NULL;
         } else if (literal) {
-            given++;
+            words[given++] = word;
         } else if (strcmp(word, "--") == 0) {
-            if (kit__cli_find_rest(&scope)) rest = true;
-            else                            literal = true;
+            rest    = kit__cli_find_rest(&scope);
+            literal = rest == NULL;
+            if (rest) {
+                KitCliArgs *passed = (KitCliArgs *)rest->dst;
+                passed->items = argv + i + 1;
+                passed->count = (size_t)(n_before - i);
+            }
         } else if (word[0] == '-' && word[1] != '\0') {
-            waiting = kit__cli_waiting(&scope, word);
+            waiting = kit__cli_note_option(&scope, word);
         } else {
             const KitCliOpt *command = kit__cli_command_in(here, n_here, word);
-            if (command && kit__cli_scope_push(&scope, command)) given = 0;
-            else                                                 given++;
+            if (command && kit__cli_scope_push(&scope, command)) {
+                *(bool *)command->dst = true;
+                given = 0;
+            } else {
+                words[given++] = word;
+            }
         }
     }
 
-    const KitCliOpt *here      = scope.tables[scope.depth - 1];
-    size_t           n_here    = scope.counts[scope.depth - 1];
-    const char      *directive = ":none";
+    const KitCliOpt *here   = scope.tables[scope.depth - 1];
+    size_t           n_here = scope.counts[scope.depth - 1];
+    bool             named  = kit__cli_has_commands(here, n_here);
+    if (!named) kit__cli_store_given(here, n_here, words, given);
+
+    const char *directive = ":none";
     if (rest) {
-        directive = ":files";
+        directive = kit__cli_offer_value(&request, rest, "", 0, typed);
     } else if (waiting) {
-        directive = kit__cli_offer_value(fp, waiting, "", 0, typed);
+        directive = kit__cli_offer_value(&request, waiting, "", 0, typed);
     } else if (!literal && typed[0] == '-') {
-        directive = kit__cli_complete_dash(fp, &scope, typed);
-    } else if (!literal && kit__cli_has_commands(here, n_here)) {
+        directive = kit__cli_complete_dash(&request, &scope, typed);
+    } else if (!literal && named) {
         kit__cli_offer_commands(fp, here, n_here, typed);
     } else {
-        directive = kit__cli_offer_positional(fp, here, n_here, given, typed);
+        directive = kit__cli_offer_positional(&request, here, n_here, given, typed);
     }
 
     fprintf(fp, "%s\n", directive);
     return true;
+}
+
+bool kit_cli_complete(FILE *fp, const KitCliOpt *opts, size_t n_opts, int argc, char **argv) {
+    return kit_cli_complete_with(fp, opts, n_opts, NULL, 0, argc, argv);
 }
 
 /* The scripts, one string per line. @NAME@ stands for the command as typed,

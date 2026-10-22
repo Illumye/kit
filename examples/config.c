@@ -7,7 +7,11 @@
  * to own the copies, and KitError carrying a context chain.
  *
  *   ./examples/config examples/demo/app.conf
+ *   ./examples/config examples/demo/app.conf server.port   # one key, alone
  *   ./examples/config examples/demo/broken.conf   # fails, and says why
+ *
+ * TAB after the file offers the keys that file holds, read when TAB is
+ * pressed: eval "$(./examples/config --completion=bash)" to try it.
  */
 
 #define KIT_IMPLEMENTATION
@@ -158,6 +162,40 @@ static bool get_real(const Config *cfg, const char *key, double *out, KitError *
     return kit_error_set(err, KIT_ERR_INVALID, "%s: expected a number, got '%s'", key, raw);
 }
 
+/* The keys of a file, sorted, since the map keeps them in no order a person
+ * would recognise. */
+typedef struct {
+    const char **items;
+    size_t       count;
+    size_t       capacity;
+} Keys;
+
+static int by_name(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/* TAB on a key: the keys of the file the line names before it, each with its
+ * value beside it. The completion has stored that name in path by the time
+ * this runs, and a file that does not parse offers nothing, quietly: the
+ * person is typing, not asking for a report. */
+static void offer_keys(KitCliAnswer *answer, const char *typed, void *context) {
+    KIT_UNUSED(typed);
+    const char *path = *(const char **)context;
+    if (!path) return;
+
+    Config   cfg  = KIT_ZEROED;
+    KitError err  = KIT_ZEROED;
+    Keys     keys = KIT_ZEROED;
+    if (parse(&cfg, path, &err)) {
+        kit_map_each(&cfg.entries, e) kit_array_push(&keys, e->key);
+        kit_array_sort(&keys, by_name);
+        for (size_t i = 0; i < keys.count; i++)
+            kit_cli_offer(answer, keys.items[i], (const char *)kit_map_get(&cfg.entries, keys.items[i]));
+    }
+    kit_array_free(&keys);
+    config_free(&cfg);
+}
+
 static bool get_flag(const Config *cfg, const char *key, bool *out) {
     const char *raw = (const char *)kit_map_get(&cfg->entries, key);
     if (!raw) return false;
@@ -171,15 +209,37 @@ int main(int argc, char **argv) {
     const char *prog = kit_cli_shift(&argc, &argv);
 
     bool        list = false, help = false;
-    const char *path = NULL;
+    int         shell = -1;
+    const char *path = NULL, *wanted = NULL;
     KitCliOpt opts[] = {
-        KIT_CLI_FLAG('l', "list", "Print every key that was read", &list),
-        KIT_CLI_HELP('h', "help", "Show this help",                &help),
-        KIT_CLI_ARG ("FILE",      "The configuration to read",     &path),
+        KIT_CLI_FLAG        ('l', "list", "Print every key that was read", &list),
+        KIT_CLI_CHOICE      (0,   "completion", KIT_CLI_SHELLS,
+                             "Print the TAB completion for a shell",       &shell),
+        KIT_CLI_HELP        ('h', "help", "Show this help",                &help),
+        KIT_CLI_ARG         ("FILE", "The configuration to read",          &path),
+        KIT_CLI_ARG_OPTIONAL("KEY",  "One key to print, alone",            &wanted),
     };
+    KitCliCompleter completers[] = {
+        KIT_CLI_COMPLETER(&wanted, offer_keys, &path),
+    };
+    if (kit_cli_complete_with_arr(stdout, opts, completers, argc, argv)) return 0;
 
     kit_log_set_fields(KIT_LOG_FIELD_LEVEL);
-    if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) {
+
+    /* --completion needs no file, while FILE is required. The parse stores
+     * each option as it reads it and checks the arguments last, so the error
+     * is taken rather than logged, and a line that asks for the script gets
+     * it, file or no file. */
+    KitError err    = KIT_ZEROED;
+    bool     parsed = kit_cli_parse_arr(opts, &argc, &argv, &err);
+    if (shell >= 0) {
+        kit_error_clear(&err);
+        if (kit_cli_completion_script(stdout, prog, (KitCliShell)shell, &err)) return 0;
+        KIT_ERROR("%s", err.message);
+        return 1;
+    }
+    if (!parsed) {
+        KIT_ERROR("%s", err.message);
         kit_cli_usage_arr(stderr, prog, opts);
         return 1;
     }
@@ -188,14 +248,23 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    Config   cfg = KIT_ZEROED;
-    KitError err = KIT_ZEROED;
+    Config cfg = KIT_ZEROED;
 
     if (!parse(&cfg, path, &err)) {
         kit_error_context(&err, "reading %s", path);
         KIT_ERROR("%s (%s)", err.message, kit_error_code_name(err.code));
         config_free(&cfg);
         return 1;
+    }
+
+    /* One key asked for: its value and nothing else, so that a script can
+     * take it as it comes. */
+    if (wanted) {
+        const char *value = (const char *)kit_map_get(&cfg.entries, wanted);
+        if (value) printf("%s\n", value);
+        else       KIT_ERROR("%s has no key %s", path, wanted);
+        config_free(&cfg);
+        return value ? 0 : 1;
     }
 
     /* Defaults first, then whatever the file overrides. */
