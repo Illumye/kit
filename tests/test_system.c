@@ -1225,10 +1225,12 @@ static char *script_text(const char *program, KitCliShell shell, KitError *err) 
 
 TEST(cli_completion_script_registers_the_command_as_typed) {
     /* A path is cut to the file name, the ".exe" goes, and the function the
-     * script defines takes a name a shell accepts. */
+     * script defines takes a name a shell accepts, in a namespace of its own:
+     * zsh names its own helpers _files or _default, and a program called
+     * files must not replace one. */
     struct { KitCliShell shell; const char *registers; } expected[] = {
         { KIT_CLI_SHELL_BASH,       "complete -o nosort -F __kit_complete_my_tool my-tool" },
-        { KIT_CLI_SHELL_ZSH,        "compdef _my_tool my-tool" },
+        { KIT_CLI_SHELL_ZSH,        "compdef _kit_complete_my_tool my-tool" },
         { KIT_CLI_SHELL_FISH,       "complete -c my-tool -f -k -a '(__kit_complete_my_tool)'" },
         { KIT_CLI_SHELL_POWERSHELL, "-CommandName 'my-tool', 'my-tool.exe'" },
     };

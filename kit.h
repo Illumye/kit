@@ -4766,9 +4766,9 @@ static const char *const kit__cli_script_bash[] = {
 static const char *const kit__cli_script_zsh[] = {
     "#compdef @NAME@",
     "# zsh completion for @NAME@, written by the program itself.",
-    "compdef _@ID@ @NAME@",
+    "compdef _kit_complete_@ID@ @NAME@",
     "",
-    "_@ID@() {",
+    "_kit_complete_@ID@() {",
     "    local program=${words[1]} line value head directive",
     "    local -a answers described",
     "    [[ $program == \\~/* ]] && program=$HOME${program#\\~}",
@@ -4796,8 +4796,9 @@ static const char *const kit__cli_script_zsh[] = {
     "    [[ $directive == :files ]] && _files",
     "}",
     "",
-    "# Loaded from $fpath, the file is the body of _@ID@ and runs as it.",
-    "if [[ $funcstack[1] == _@ID@ ]]; then _@ID@ \"$@\"; fi",
+    "# Saved in $fpath as _kit_complete_@ID@, the file is the body of that",
+    "# function, and runs as it.",
+    "if [[ $funcstack[1] == _kit_complete_@ID@ ]]; then _kit_complete_@ID@ \"$@\"; fi",
     NULL
 };
 
