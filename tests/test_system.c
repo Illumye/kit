@@ -546,8 +546,6 @@ TEST(cli_parse_failures_carry_a_message_for_the_user) {
       CHECK(strstr(err.message, " in ") == NULL); }
 }
 
-/* --- commands ------------------------------------------------------------- */
-
 /* What kit_cli_usage prints for a table, as a heap string. Written in binary
  * mode so that Windows keeps the newlines the library wrote. */
 static char *usage_text(const KitCliOpt *opts, size_t n_opts) {
@@ -560,6 +558,49 @@ static char *usage_text(const KitCliOpt *opts, size_t n_opts) {
     remove(path);
     return text;
 }
+
+/* --- choices -------------------------------------------------------------- */
+
+TEST(cli_choice_takes_one_value_out_of_its_list) {
+    enum { WHEN_AUTO, WHEN_ALWAYS, WHEN_NEVER };
+    int when = WHEN_AUTO;
+
+    KitCliOpt opts[] = {
+        KIT_CLI_CHOICE('c', "color", "auto|always|never", "When to use colour", &when),
+    };
+    CHECK(opts[0].type == KIT_CLI_OPT_CHOICE);
+
+    { ARGV("--color=never");  CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL)); }
+    CHECK_INT(when, WHEN_NEVER);
+    { ARGV("-c", "always");   CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL)); }
+    CHECK_INT(when, WHEN_ALWAYS);
+    { ARGV("-cauto");         CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL)); }
+    CHECK_INT(when, WHEN_AUTO);
+    { ARGV("--color", "never"); CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL)); }
+    CHECK_INT(when, WHEN_NEVER);
+
+    /* Exact matches only: no prefix, no case folding. The destination keeps
+     * what it held. */
+    KitError err = KIT_ZEROED;
+    { ARGV("--color=sometimes");
+      CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID,
+                        "'--color=sometimes' expects one of auto, always, never, got 'sometimes'")); }
+    kit_error_clear(&err);
+    { ARGV("-c", "Never");
+      CHECK(!kit_cli_parse_arr(opts, &argc, &argv, &err));
+      CHECK(failed_with(&err, KIT_ERR_INVALID, "got 'Never'")); }
+    { ARGV("--color=al");     CHECK(!kit_cli_parse_arr(opts, &argc, &argv, NULL)); }
+    { ARGV("--color=");       CHECK(!kit_cli_parse_arr(opts, &argc, &argv, NULL)); }
+    CHECK_INT(when, WHEN_NEVER);
+
+    /* The usage shows the list where a value option shows its placeholder. */
+    char *text = usage_text(opts, KIT_COUNTOF(opts));
+    if (CHECK(text != NULL)) CHECK(strstr(text, "  -c, --color=<auto|always|never> ") != NULL);
+    free(text);
+}
+
+/* --- commands ------------------------------------------------------------- */
 
 /* The table is data a program can read back, so what each macro writes into
  * an entry is part of the contract. */
@@ -967,6 +1008,7 @@ int main(int argc, char **argv) {
     RUN(command_exit_status_on_windows);
 #endif
     RUN(cli_parse_failures_carry_a_message_for_the_user);
+    RUN(cli_choice_takes_one_value_out_of_its_list);
     RUN(cli_command_tables_say_what_their_entries_are);
     RUN(cli_commands_choose_the_table_that_reads_the_rest);
     RUN(cli_commands_nest_and_the_innermost_name_wins);

@@ -1146,6 +1146,17 @@ char *kit_cli_shift(int *argc, char ***argv);
  *   --output=file
  *   --            ends option parsing; remaining args are positional
  *
+ * KIT_CLI_CHOICE takes one value out of a list written into the entry, and
+ * stores its position in the list, so an enum declared in the same order
+ * reads it back:
+ *
+ *   enum { WHEN_AUTO, WHEN_ALWAYS, WHEN_NEVER };
+ *   int when = WHEN_AUTO;
+ *   KIT_CLI_CHOICE(0, "color", "auto|always|never", "When to use colour", &when)
+ *
+ * Any other value is refused with the list of the accepted ones, and the
+ * usage shows the list where another option shows its placeholder.
+ *
  * -- Commands ----------------------------------------------------------------
  *
  * A program built around commands, the way git and cargo are, describes them
@@ -1187,6 +1198,7 @@ typedef enum {
     KIT_CLI_OPT_FLAG,      /* bool *, set when the option is present */
     KIT_CLI_OPT_STR,       /* const char **, the value as typed      */
     KIT_CLI_OPT_INT,       /* int *                                  */
+    KIT_CLI_OPT_CHOICE,    /* int *, the position of the value given */
     KIT_CLI_OPT_COMMAND,   /* bool *, set when the command is named  */
     KIT_CLI_OPT_REST       /* KitCliArgs *, what follows "--"        */
 } KitCliOptType;
@@ -1196,7 +1208,8 @@ struct KitCliOpt {
     char             short_name; /* single char, or 0 */
     const char      *long_name;  /* without leading "--", or NULL; a command's name */
     KitCliOptType    type;
-    const char      *meta;       /* value placeholder shown in help, e.g. "FILE" */
+    const char      *meta;       /* value placeholder shown in help, e.g. "FILE";
+                                  * for a choice, the list: "auto|always|never" */
     const char      *help;
     void            *dst;        /* see KitCliOptType */
     const KitCliOpt *opts;       /* a command's own table, or NULL */
@@ -1213,6 +1226,9 @@ typedef struct {
 #define KIT_CLI_FLAG(s, l,       help, dst) { (s), (l), KIT_CLI_OPT_FLAG, NULL,  (help), (dst), NULL, 0 }
 #define KIT_CLI_STR( s, l, meta, help, dst) { (s), (l), KIT_CLI_OPT_STR,  (meta),(help), (dst), NULL, 0 }
 #define KIT_CLI_INT( s, l, meta, help, dst) { (s), (l), KIT_CLI_OPT_INT,  (meta),(help), (dst), NULL, 0 }
+
+#define KIT_CLI_CHOICE(s, l, choices, help, dst) \
+    { (s), (l), KIT_CLI_OPT_CHOICE, (choices), (help), (dst), NULL, 0 }
 
 /* A command and its table. A command with no options of its own, which still
  * takes those of the tables around it, is KIT_CLI_COMMAND_BARE: C has no
@@ -3580,7 +3596,7 @@ static bool kit__cli_scope_push(Kit__CliScope *scope, const KitCliOpt *command) 
  * the entry for what follows "--" has no name at all. */
 static bool kit__cli_is_option(const KitCliOpt *o) {
     return o->type == KIT_CLI_OPT_FLAG || o->type == KIT_CLI_OPT_STR ||
-           o->type == KIT_CLI_OPT_INT;
+           o->type == KIT_CLI_OPT_INT  || o->type == KIT_CLI_OPT_CHOICE;
 }
 
 static const KitCliOpt *kit__cli_short_in(const KitCliOpt *opts, size_t n_opts, char c) {
@@ -3648,12 +3664,39 @@ static const KitCliOpt *kit__cli_find_rest(const Kit__CliScope *scope) {
     return NULL;
 }
 
+/* A value outside the list, refused with the list as a person reads it:
+ * "auto|always|never" becomes "auto, always, never". */
+static bool kit__cli_refuse_choice(const KitCliOpt *o, const char *val, const char *origin,
+                                   KitError *err) {
+    KitBuf list    = KIT_ZEROED;
+    KitStr choices = kit_str_from(o->meta ? o->meta : ""), choice;
+    while (kit_str_next(&choices, '|', &choice)) {
+        if (list.count > 0) kit_buf_append(&list, ", ");
+        kit_buf_append_str(&list, choice);
+    }
+    kit_error_set(err, KIT_ERR_INVALID, "'%s' expects one of %s, got '%s'",
+                  origin, kit_buf_cstr(&list), val);
+    kit_buf_free(&list);
+    return false;
+}
+
 /* `origin` is the argument as the user typed it, quoted back in errors. */
 static bool kit__cli_assign(const KitCliOpt *o, const char *val, const char *origin,
                             KitError *err) {
     if (o->type == KIT_CLI_OPT_STR) {
         *(const char **)o->dst = val;
         return true;
+    }
+
+    if (o->type == KIT_CLI_OPT_CHOICE) {
+        KitStr choices = kit_str_from(o->meta ? o->meta : ""), choice;
+        for (int at = 0; kit_str_next(&choices, '|', &choice); at++) {
+            if (kit_str_eq_cstr(choice, val)) {
+                *(int *)o->dst = at;
+                return true;
+            }
+        }
+        return kit__cli_refuse_choice(o, val, origin, err);
     }
 
     char *end;

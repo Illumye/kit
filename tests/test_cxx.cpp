@@ -112,23 +112,26 @@ TEST(cxx_cli_tables_that_point_to_tables) {
      * holds the address and the length of another table. Until the commands
      * came, no table had ever been compiled as C++. */
     bool       build = false, release = false;
+    int        when  = 0;
     KitCliArgs passed = KIT_ZEROED;
 
     KitCliOpt build_opts[] = {
-        KIT_CLI_FLAG('r', "release", "release", &release),
-        KIT_CLI_REST("ARGS", "args", &passed),
+        KIT_CLI_FLAG  ('r', "release", "release", &release),
+        KIT_CLI_CHOICE(0,   "color", "auto|always|never", "when", &when),
+        KIT_CLI_REST  ("ARGS", "args", &passed),
     };
     KitCliOpt opts[] = {
         KIT_CLI_COMMAND     ("build", "build", build_opts, &build),
         KIT_CLI_COMMAND_BARE("clean", "clean", &build),
     };
 
-    const char *storage[] = { "build", "-r", "--", "x" };
-    int    argc = 4;
+    const char *storage[] = { "build", "-r", "--color=never", "--", "x" };
+    int    argc = 5;
     char **argv = const_cast<char **>(storage);
     CHECK(kit_cli_parse_arr(opts, &argc, &argv, NULL));
     CHECK(build);
     CHECK(release);
+    CHECK_INT(when, 2);
     CHECK_INT(argc, 0);
     if (CHECK_INT(passed.count, 1)) CHECK_STR(passed.items[0], "x");
 }

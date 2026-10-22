@@ -155,6 +155,9 @@ check-examples: $(EXAMPLE_BIN)
 	@./examples/build run Ada 2>&1 | grep -q "unexpected 'Ada': what the program receives goes after --"
 	@./examples/build run -h | grep -qF -e '-- <ARGS>...'
 	@./examples/build    2>&1 | grep -q '0 file(s) compiled'
+	@./examples/build --color=always 2>&1 | grep -q "$$(printf '\033')"
+	@! ./examples/build --color=never 2>&1 | grep -q "$$(printf '\033')"
+	@./examples/build --color=sometimes 2>&1 | grep -q 'expects one of auto, always, never'
 	@touch examples/demo/greet.h
 	@./examples/build    2>&1 | grep -q '0 file(s) compiled'
 # A real change to the same header does rebuild. The copy is put back

@@ -30,6 +30,7 @@
  *
  *   cc -o build examples/build.c && ./build
  *   ./build -v                show every command
+ *   ./build --color=never     a plain log, for a CI job
  *   ./build run -- Ada Alan   build, then greet two people
  *   ./build clean             remove the build directory
  */
@@ -194,6 +195,7 @@ int main(int argc, char **argv) {
     const char *prog = kit_cli_shift(&argc, &argv);
 
     bool       verbose = false, help = false, do_run = false, do_clean = false;
+    int        color   = KIT_LOG_COLOR_AUTO;
     KitCliArgs passed  = KIT_ZEROED;
 
     /* -v and -h belong to the outer table, so they work after a command as
@@ -203,6 +205,7 @@ int main(int argc, char **argv) {
     };
     KitCliOpt opts[] = {
         KIT_CLI_FLAG        ('v', "verbose", "Echo every command", &verbose),
+        KIT_CLI_CHOICE      (0,   "color",   "auto|always|never", "When to colour the log", &color),
         KIT_CLI_FLAG        ('h', "help",    "Show this help",     &help),
         KIT_CLI_COMMAND     ("run",   "Build, then run the program", run_opts, &do_run),
         KIT_CLI_COMMAND_BARE("clean", "Remove the build directory",            &do_clean),
@@ -231,8 +234,11 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Quiet by default: only what the user needs, and the commands on -v. */
+    /* Quiet by default: only what the user needs, and the commands on -v.
+     * The colour list is written in KitLogColor's order, so the position the
+     * parser stored goes straight to the logger. */
     kit_log_set_level(verbose ? KIT_LOG_DEBUG : KIT_LOG_INFO);
+    kit_log_set_color((KitLogColor)color);
 
     KitError err = KIT_ZEROED;
 

@@ -96,7 +96,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     bool        flag_a = false, flag_b = false, flag_c = false;
     const char *str_o  = "default";
-    int         num_j  = 0;
+    int         num_j  = 0, when = -1;
 
     KitCliOpt flat[] = {
         KIT_CLI_FLAG('a', "all",     "a", &flag_a),
@@ -105,8 +105,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         KIT_CLI_STR ('o', "output",  "FILE", "o", &str_o),
         KIT_CLI_INT ('j', "jobs",    "N",    "j", &num_j),
         KIT_CLI_STR (0,   "only-long", "V",  "l", &str_o),
+        KIT_CLI_CHOICE('w', "when", "auto||never", "w", &when),
     };
     check(flat, KIT_COUNTOF(flat), storage, count, &str_o, NULL);
+
+    /* A choice is a position in its list or untouched, never anything else.
+     * The empty middle entry is a choice like the others. */
+    assert(when >= -1 && when <= 2);
 
     /* x takes over -a from the root, and y nests a command of its own. */
     bool       cmd_x = false, cmd_y = false, cmd_z = false, flag_x = false;

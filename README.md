@@ -42,7 +42,7 @@ new one.
 | Arena | `kit_arena`, `kit_scratch` | Bump allocation over chained regions, and per-thread scratch |
 | Timer | `kit_timer` | Monotonic timing |
 | Vectors | `kit_vec2`, `kit_vec3` | 2D and 3D vector maths |
-| Command line | `kit_cli` | Options and commands in one table, what follows `--` kept apart, generated usage |
+| Command line | `kit_cli` | Options, choices and commands in one table, what follows `--` kept apart, generated usage |
 | Buffers | `kit_buf` | Growable text buffer with `printf` formatting |
 | Processes | `kit_command`, `kit_process` | Run a child, wait for it, or capture either stream |
 | Map | `kit_map` | String keys, open addressing |
@@ -178,7 +178,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 214 tests over seventeen files, and the header compiles warning-free
+The suite is 215 tests over seventeen files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 
