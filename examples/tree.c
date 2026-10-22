@@ -10,6 +10,9 @@
  *
  *   ./examples/tree --depth 2 examples
  *   ./examples/tree --match '*.c' --largest 5 examples
+ *
+ * TAB after it offers directories and nothing else, since nothing else can
+ * be walked: eval "$(./examples/tree --completion=bash)" to try it.
  */
 
 #define KIT_IMPLEMENTATION
@@ -152,22 +155,38 @@ static bool walk(const char *path, int depth, int max_depth, Totals *totals, Kit
 int main(int argc, char **argv) {
     const char *prog = kit_cli_shift(&argc, &argv);
 
-    int  depth = 2, largest = 3;
+    int  depth = 2, largest = 3, shell = -1;
     bool help  = false;
     const char *match = "*", *root = ".";
     KitCliOpt opts[] = {
         KIT_CLI_INT         ('d', "depth",   "N",    "How deep to go",             &depth),
         KIT_CLI_INT         ('l', "largest", "N",    "How many big files to name", &largest),
         KIT_CLI_STR         ('m', "match",   "GLOB", "Only files matching this",   &match),
+        KIT_CLI_CHOICE      (0,   "completion", KIT_CLI_SHELLS,
+                             "Print the TAB completion for a shell",               &shell),
         KIT_CLI_HELP        ('h', "help",    "Show this help",                     &help),
         KIT_CLI_ARG_OPTIONAL("DIR", "Where to start, the current directory if none", &root),
     };
+
+    /* Only a directory can be walked, so TAB offers directories and nothing
+     * else: no file name to pick by mistake. */
+    KitCliCompleter completers[] = {
+        KIT_CLI_COMPLETER(&root, kit_cli_offer_dirs, NULL),
+    };
+    if (kit_cli_complete_with_arr(stdout, opts, completers, argc, argv)) return 0;
 
     /* A second directory used to be dropped without a word; the parser now
      * refuses it, since the walk only ever takes one. */
     kit_log_set_fields(KIT_LOG_FIELD_LEVEL);
     if (!kit_cli_parse_arr(opts, &argc, &argv, NULL)) return 1;
     if (help) { kit_cli_usage_arr(stdout, prog, opts); return 0; }
+
+    if (shell >= 0) {
+        KitError err = KIT_ZEROED;
+        if (kit_cli_completion_script(stdout, prog, (KitCliShell)shell, &err)) return 0;
+        KIT_ERROR("%s", err.message);
+        return 1;
+    }
 
     if (!kit_fs_is_dir(root)) {
         KIT_ERROR("%s is not a directory", root);

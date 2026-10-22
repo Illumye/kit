@@ -176,8 +176,8 @@ tool completion powershell | Out-String | Invoke-Expression   # $PROFILE
 
 From then on the program completes itself: its commands, its options with
 their help beside them, the values of a choice, whether it is an option or an
-argument, and file names where a file belongs. `tool __complete run --r`
-prints what TAB would offer.
+argument, file names where a file belongs, and directories alone where only
+one will do. `tool __complete run --r` prints what TAB would offer.
 
 What no table can know, the keys of a file or the branches of a repository,
 comes from a function of the program's, attached to the variable it fills.
@@ -186,7 +186,8 @@ them where the program would:
 
 ```c
 KitCliCompleter completers[] = {
-    KIT_CLI_COMPLETER(&key, offer_keys, &path),   /* the keys of the file in path */
+    KIT_CLI_COMPLETER(&key,  offer_keys, &path),        /* the keys of the file in path */
+    KIT_CLI_COMPLETER(&root, kit_cli_offer_dirs, NULL), /* directories, and nothing else */
 };
 if (kit_cli_complete_with_arr(stdout, opts, completers, argc, argv)) return 0;
 ```
@@ -238,7 +239,7 @@ make check-windows   # cross-compile with mingw-w64 and run under wine
 make fuzz            # libFuzzer over the parsers, FUZZ_SECS=600 to go deeper
 ```
 
-The suite is 229 tests over seventeen files, and the header compiles warning-free
+The suite is 231 tests over seventeen files, and the header compiles warning-free
 under gcc and clang with `-Wall -Wextra -Wpedantic -Wconversion -Wshadow
 -Wcast-qual -Wstrict-prototypes -Wwrite-strings`.
 
@@ -258,7 +259,7 @@ tests, which is where exhaustiveness belongs.
 | `journal.c` | Rotates a log file when it grows | filesystem writes, logger configuration, error codes |
 | `orbit.c` | Steps a few bodies around a centre | vectors, scalar maths, arena, timer |
 | `runner.c` | Reports on other programs and runs them | commands, processes, captured output, ring buffer |
-| `tree.c` | Walks a directory, measures it, names its biggest files | filesystem, paths, heap, glob |
+| `tree.c` | Walks a directory, measures it, names its biggest files | filesystem, paths, heap, glob, completion of directories |
 | `wordfreq.c` | Counts words in a text, accents included | string views, map, arrays, UTF-8 |
 | `peek.c` | Says what a file is, sums it, shows its bytes | option parsing, file kinds, checksums, hex dump |
 

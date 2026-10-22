@@ -1205,6 +1205,22 @@ TEST(cli_completion_stores_commands_and_the_rest_too) {
     CHECK_STR(completer_saw, "unset");
 }
 
+TEST(cli_completers_can_ask_for_directories_alone) {
+    const char *root = ".", *out = "build";
+    KitCliOpt opts[] = {
+        KIT_CLI_STR         ('o', "out", "DIR", "Where to write", &out),
+        KIT_CLI_ARG_OPTIONAL("DIR", "Where to start", &root),
+    };
+    KitCliCompleter completers[] = {
+        KIT_CLI_COMPLETER(&root, kit_cli_offer_dirs, NULL),
+        KIT_CLI_COMPLETER(&out,  kit_cli_offer_dirs, NULL),
+    };
+    CHECK_COMPLETED(":dirs\n", "");
+    CHECK_COMPLETED(":dirs\n", "examples/de");
+    CHECK_COMPLETED(":dirs\n", "--out=bu");
+    CHECK_COMPLETED(":dirs\n", "-o", "");
+}
+
 /* The script for one shell and one program name, as a heap string, or NULL
  * when it was refused. */
 static char *script_text(const char *program, KitCliShell shell, KitError *err) {
@@ -1262,6 +1278,22 @@ TEST(cli_completion_shells_are_listed_in_the_enum_order) {
         KitError err  = KIT_ZEROED;
         char    *text = script_text("tool", (KitCliShell)shell, &err);
         if (CHECK(text != NULL)) CHECK(strstr(text, headers[i]) != NULL);
+        free(text);
+    }
+}
+
+/* Each script turns the last line of an answer into the shell's own way of
+ * completing paths, directories alone included. */
+TEST(cli_completion_scripts_know_every_answer) {
+    const char *dirs[] = { "paths=-d", "_path_files -/", "__fish_complete_directories",
+                           "Get-ChildItem -Directory" };
+    for (int shell = KIT_CLI_SHELL_BASH; shell <= KIT_CLI_SHELL_POWERSHELL; shell++) {
+        KitError err  = KIT_ZEROED;
+        char    *text = script_text("tool", (KitCliShell)shell, &err);
+        if (!CHECK(text != NULL)) continue;
+        CHECK(strstr(text, ":files") != NULL);
+        CHECK(strstr(text, ":dirs") != NULL);
+        CHECK(strstr(text, dirs[shell]) != NULL);
         free(text);
     }
 }
@@ -1642,6 +1674,7 @@ int main(int argc, char **argv) {
     RUN(cli_complete_keeps_each_description_to_one_line);
     RUN(cli_completion_script_registers_the_command_as_typed);
     RUN(cli_completion_shells_are_listed_in_the_enum_order);
+    RUN(cli_completion_scripts_know_every_answer);
     RUN(cli_completion_script_refuses_what_it_cannot_write);
     RUN(cli_positionals_fill_the_declared_arguments);
     RUN(cli_positional_lists_leave_what_the_next_arguments_need);
@@ -1651,6 +1684,7 @@ int main(int argc, char **argv) {
     RUN(cli_complete_offers_what_each_argument_expects);
     RUN(cli_completers_offer_what_no_table_can_know);
     RUN(cli_completion_stores_commands_and_the_rest_too);
+    RUN(cli_completers_can_ask_for_directories_alone);
     RUN(timer_measures_forward);
     RUN(scalar_helpers);
     RUN(vector_helpers);

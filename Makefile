@@ -194,6 +194,8 @@ check-examples: $(EXAMPLE_BIN)
 	@./examples/tree --depth 2 --largest 2 examples/demo | grep -q 'largest 2'
 	@./examples/tree --depth 2 --match '*.conf' examples/demo | grep -q '2 files'
 	@./examples/tree examples examples/demo 2>&1 | grep -q "unexpected argument 'examples/demo'"
+	@./examples/tree __complete examples/de | grep -q '^:dirs$$'
+	@./examples/tree --completion=bash | grep -q 'compgen "$$paths"'
 	@./examples/orbit --bodies 3 --steps 50 | grep -q 'spin axis'
 	@./examples/runner -- echo hello | grep -q '^hello$$'
 	@./examples/runner -- sh -c 'for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo line $$i; done; exit 7' 2>&1 \
@@ -210,7 +212,7 @@ check-examples: $(EXAMPLE_BIN)
 # an interactive bash and zsh, asked of fish and PowerShell. A shell that is
 # not installed is skipped and named, so a green run says what it covered.
 
-check-completion: examples/build examples/config
+check-completion: examples/build examples/config examples/tree
 	@command -v python3 > /dev/null || { echo "check-completion: python3 not found, skipped"; exit 0; }; \
 	 python3 tests/check_completion.py
 

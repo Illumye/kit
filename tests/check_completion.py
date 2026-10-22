@@ -32,10 +32,11 @@ WINDOWS  = os.name == "nt"
 TIMEOUT  = 10
 
 # Each program, and how it prints its script for a shell: build has a
-# completion command, config an option, since it has no commands.
+# completion command, config and tree an option, having no commands.
 PROGRAMS = {
     "build":  lambda shell: ["completion", shell],
     "config": lambda shell: ["--completion=" + shell],
+    "tree":   lambda shell: ["--completion=" + shell],
 }
 
 
@@ -54,10 +55,19 @@ INSERTIONS = [
     ("config examples/demo/app.conf server.p", "config examples/demo/app.conf server.port"),
 ]
 
-# The same, where the shell's own file completion takes over. Only a line
-# can be compared: how a shell spells the path it offers is its own affair.
-FILES = [
-    ("build run -- examples/demo/app", "build run -- examples/demo/app.conf"),
+# Where the shell's own completion of paths takes over: files after "--",
+# directories alone where tree takes one. The interactive shells are held to
+# the line they leave; how fish and PowerShell spell a path is their affair,
+# so only the name is compared there.
+PATHS = [
+    ("build run -- examples/demo/app", "build run -- examples/demo/app.conf", "app.conf"),
+    ("tree examples/de",               "tree examples/demo/",                 "demo"),
+]
+
+# Where nothing may be offered, so the line stays as it was: only files start
+# with examples/pe, and tree takes a directory.
+UNTOUCHED = [
+    ("tree examples/pe", "peek"),
 ]
 
 # What a line offers, where there is a choice to make. The empty word after
@@ -155,9 +165,13 @@ def interactive(shell, env, home):
 
 def check_interactive(shell, env, home):
     term, failures = interactive(shell, env, home), []
-    for typed, wanted in INSERTIONS + FILES:
+    expected = INSERTIONS + [(typed, line) for typed, line, _ in PATHS] + \
+               [(typed, typed) for typed, _ in UNTOUCHED]
+    for typed, wanted in expected:
         got, _ = term.line_after(typed, 1)
-        if got != wanted:
+        # zsh takes back the slash it added after a directory when the line is
+        # run, which is how the line is read here.
+        if got is None or got.rstrip("/") != wanted.rstrip("/"):
             failures.append(f"{typed!r} became {got!r}, not {wanted!r}")
     for typed, offered in OFFERS:
         _, shown = term.line_after(typed, 2)
@@ -169,7 +183,7 @@ def check_interactive(shell, env, home):
 
 
 def candidates_fish(env):
-    lines = "\n".join(typed for typed, _ in INSERTIONS + FILES + OFFERS)
+    lines = "\n".join(typed for typed, *_ in INSERTIONS + PATHS + UNTOUCHED + OFFERS)
     script = ("\n".join(loading("fish")) + "\n"
               "for line in (string split \\n -- $KIT_LINES)\n"
               "    printf 'LINE\\t%s\\n' $line\n"
@@ -182,7 +196,7 @@ def candidates_fish(env):
 
 
 def candidates_powershell(executable, env):
-    lines = "\n".join(typed for typed, _ in INSERTIONS + FILES + OFFERS)
+    lines = "\n".join(typed for typed, *_ in INSERTIONS + PATHS + UNTOUCHED + OFFERS)
     script = ("\n".join(loading("powershell")) + "\n"
               "foreach ($line in ($env:KIT_LINES -split \"`n\")) {\n"
               "    \"LINE`t$line\"\n"
@@ -210,13 +224,21 @@ def parse_candidates(output):
     return found
 
 
+def bare(candidate):
+    """A path without the quotes or the trailing separator a shell adds."""
+    return candidate.strip("'\"").rstrip("/\\")
+
+
 def check_candidates(found):
     failures = []
-    for typed, wanted in FILES:
+    for typed, _, name in PATHS:
         got = found.get(typed) or []
-        name = os.path.basename(wanted)
-        if not any(candidate.rstrip("'\"").endswith(name) for candidate in got):
+        if not any(bare(candidate).endswith(name) for candidate in got):
             failures.append(f"{typed!r} offered {got!r}, without {name!r}")
+    for typed, name in UNTOUCHED:
+        got = [candidate for candidate in (found.get(typed) or []) if candidate]
+        if any(name in candidate for candidate in got):
+            failures.append(f"{typed!r} offered {got!r}, which it must not")
     for typed, wanted in INSERTIONS:
         got = found.get(typed)
         # The candidate replaces the word under the cursor, so the line it
@@ -263,7 +285,8 @@ def main():
                 for failure in failures:
                     print(f"  {failure}")
             else:
-                print(f"completion: {shell} ok ({len(INSERTIONS) + len(FILES) + len(OFFERS)} lines)")
+                total = len(INSERTIONS) + len(PATHS) + len(UNTOUCHED) + len(OFFERS)
+                print(f"completion: {shell} ok ({total} lines)")
     return status
 
 

@@ -1354,7 +1354,8 @@ void kit_cli_usage(FILE *fp, const char *program, const KitCliOpt *opts, size_t 
  * name up to the cursor, the last one being the word under it: empty when
  * the cursor follows a space. The answer is one candidate per line, with its
  * description after a tab when it has one, then a last line for the shell:
- * ":files" when file names belong there too, ":none" when they do not.
+ * ":files" when file names belong there too, ":dirs" when directories alone
+ * do, ":none" when neither does.
  *
  * Offered: the commands where a command is due, the options after a dash, a
  * choice's values, file names for a string and for what follows "--", and
@@ -1418,9 +1419,13 @@ bool kit_cli_complete_with(FILE *fp, const KitCliOpt *opts, size_t n_opts,
  * has; so is one holding a tab or a newline, which the shell would cut. */
 void kit_cli_offer(KitCliAnswer *answer, const char *value, const char *help);
 
-/* Asks the shell to offer file names there too. It has the shape of a
- * completer, so it can also stand in a KitCliCompleter as it is. */
+/* Asks the shell to offer file names there too, or directories alone. Both
+ * have the shape of a completer, so either can stand in a KitCliCompleter as
+ * it is, which is how an argument that only a directory fits says so:
+ *
+ *   KIT_CLI_COMPLETER(&root, kit_cli_offer_dirs, NULL) */
 void kit_cli_offer_files(KitCliAnswer *answer, const char *typed, void *context);
+void kit_cli_offer_dirs(KitCliAnswer *answer, const char *typed, void *context);
 
 /* The shells kit_cli_completion_script writes for. KIT_CLI_SHELLS names them
  * in the same order, as the list of a choice, so the position a parse stores
@@ -4471,6 +4476,12 @@ void kit_cli_offer_files(KitCliAnswer *answer, const char *typed, void *context)
     answer->directive = ":files";
 }
 
+void kit_cli_offer_dirs(KitCliAnswer *answer, const char *typed, void *context) {
+    KIT_UNUSED(typed);
+    KIT_UNUSED(context);
+    answer->directive = ":dirs";
+}
+
 /* Every option in force whose name starts with what is typed, innermost table
  * first, under the names nothing nearer has taken over: an entry is offered
  * only when looking its name up leads back to it. A lone dash asks for the
@@ -4751,11 +4762,19 @@ static const char *const kit__cli_script_bash[] = {
     "        word=${answers[i]%%$'\\t'*}",
     "        COMPREPLY+=(\"${word#\"$prefix\"}\")",
     "    done",
-    "    if [[ ${answers[n-1]} == :files ]]; then",
+    "",
+    "    # File names, or directories alone, come from bash itself, which knows",
+    "    # how to quote them.",
+    "    local paths=",
+    "    case ${answers[n-1]} in",
+    "        :files) paths=-f ;;",
+    "        :dirs)  paths=-d ;;",
+    "    esac",
+    "    if [[ -n $paths ]]; then",
     "        type compopt &>/dev/null && compopt -o filenames",
     "        while IFS= read -r word; do",
     "            [[ -n $word ]] && COMPREPLY+=(\"$word\")",
-    "        done <<< \"$(compgen -f -- \"${cur#\"$prefix\"}\")\"",
+    "        done <<< \"$(compgen \"$paths\" -- \"${cur#\"$prefix\"}\")\"",
     "    fi",
     "}",
     "complete -o nosort -F __kit_complete_@ID@ @NAME@ 2>/dev/null ||",
@@ -4793,7 +4812,12 @@ static const char *const kit__cli_script_zsh[] = {
     "        fi",
     "    done",
     "    (( ${#described} )) && _describe -V -t @ID@ '@NAME@' described",
-    "    [[ $directive == :files ]] && _files",
+    "    # _files honours the person's own file styles; for directories alone it",
+    "    # falls back to every file when none matches, which _path_files does not.",
+    "    case $directive in",
+    "        :files) _files ;;",
+    "        :dirs)  _path_files -/ ;;",
+    "    esac",
     "}",
     "",
     "# Saved in $fpath as _kit_complete_@ID@, the file is the body of that",
@@ -4822,12 +4846,19 @@ static const char *const kit__cli_script_fish[] = {
     "    for answer in $answers",
     "        printf '%s\\n' $answer",
     "    end",
-    "    if test \"$directive\" = :files",
-    "        # A value written --name=value is completed after the \"=\".",
-    "        set -l head (string match -r -- '^-[^=]*=' \"$current\")",
-    "        for path in (__fish_complete_path (string replace -r -- '^-[^=]*=' '' \"$current\"))",
-    "            printf '%s%s\\n' \"$head\" $path",
-    "        end",
+    "",
+    "    # A value written --name=value is completed after the \"=\".",
+    "    set -l head (string match -r -- '^-[^=]*=' \"$current\")",
+    "    set -l value (string replace -r -- '^-[^=]*=' '' \"$current\")",
+    "    set -l paths",
+    "    switch $directive",
+    "        case :files",
+    "            set paths (__fish_complete_path \"$value\")",
+    "        case :dirs",
+    "            set paths (__fish_complete_directories \"$value\")",
+    "    end",
+    "    for path in $paths",
+    "        printf '%s%s\\n' \"$head\" $path",
     "    end",
     "end",
     "",
@@ -4869,6 +4900,21 @@ static const char *const kit__cli_script_powershell[] = {
     "        if (-not $help) { $help = $value }",
     "        $found = $true",
     "        [System.Management.Automation.CompletionResult]::new($value, $value, 'ParameterValue', $help)",
+    "    }",
+    "",
+    "    # Directories alone are listed here: PowerShell's own completion would",
+    "    # offer every file as well. A value written --name=value is completed",
+    "    # after the \"=\", and a path keeps the separators it was typed with.",
+    "    if ($answers[-1] -eq ':dirs') {",
+    "        $head, $path = '', $wordToComplete",
+    "        if ($wordToComplete -match '^(-[^=]*=)(.*)$') { $head, $path = $Matches[1], $Matches[2] }",
+    "        $parent = $path -replace '[^\\\\/]*$', ''",
+    "        foreach ($dir in @(Get-ChildItem -Directory -Path \"$path*\" -ErrorAction SilentlyContinue)) {",
+    "            $text = $parent + $dir.Name",
+    "            if ($text -match '\\s') { $text = \"'$text'\" }",
+    "            $found = $true",
+    "            [System.Management.Automation.CompletionResult]::new($head + $text, $dir.Name, 'ProviderContainer', $dir.FullName)",
+    "        }",
     "    }",
     "",
     "    # Answering nothing at all would let PowerShell offer file names.",

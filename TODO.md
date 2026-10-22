@@ -153,9 +153,10 @@ compiler accepts. `-pedantic` says so; nothing else does.
 both yield two fields. Distinguishing them needs a state bit hidden inside the
 `KitStr`, which costs more than it is worth.
 
-**A value attached to a short option gets no file names.** `-ofile` is a
-single word to every shell, and none of them completes inside one: `-o file`
-and `--output=file` are completed, the attached form is not.
+**A value attached to a short option gets no path completed.** `-ofile` is
+a single word to every shell, and none of them completes a file or a
+directory inside one: `-o file` and `--output=file` are completed, the
+attached form is not.
 
 **A table that declares no positional argument keeps every word unchecked.**
 That is what keeps the tables written before positional arguments existed
